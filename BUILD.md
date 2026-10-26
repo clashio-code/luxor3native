@@ -111,7 +111,35 @@ Use a unique folder and launcher; never overwrite another port:
 
 ```text
 /mnt/SDCARD/Ports/Luxor3/
-  luxor3       # native ARM Linux executable
+  luxor3_gl    # native ARM Linux executable (GLES2 + 2D fallback)
+  luxor3       # native ARM Linux executable (2D only)
+  device_probe # runtime probe, for checking the video driver on the device
   data/        # user-supplied game data, local/private
   luxor3.sh    # PortMaster/muOS launcher
 ```
+
+Assemble it from the Actions artifact with:
+
+```sh
+python3 tools/package_sdcard.py \
+  --artifact /path/to/extracted/luxor3-aarch64 \
+  --sd-root /path/to/SDCARD \
+  --game-data "/path/to/your/Luxor 3/data"
+```
+
+`--game-data` must point at the `data/` folder of a copy of the original game
+that you own. The script copies it locally and never commits or uploads it
+(`docs/ASSET_POLICY.md`).
+
+Then, on the device, check which video driver works before launching:
+
+```sh
+./device_probe
+for d in x11 wayland kmsdrm fbdev dummy; do
+  SDL_VIDEODRIVER=$d ./device_probe
+done
+```
+
+The launcher prefers `luxor3_gl`, which tries GLES2 first and falls back to
+`SDL_Renderer` 2D when the driver cannot create a GL context. The RG40XXV has
+no `/dev/dri`, so 2D is the likely path there.

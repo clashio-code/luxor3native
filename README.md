@@ -90,6 +90,20 @@ done
 The core builds without SDL2 or GLES2, so CI can verify game logic before the
 device's SDL2 version is known. See [`BUILD.md`](BUILD.md).
 
+After downloading and extracting the `luxor3-aarch64` Actions artifact, assemble
+a local SD-card port folder (the script copies the game data only from your
+local installation and never commits it):
+
+```sh
+python3 tools/package_sdcard.py \\
+  --artifact /path/to/extracted/luxor3-aarch64 \\
+  --sd-root /path/to/SDCARD \\
+  --game-data "/path/to/your/Luxor 3/data"
+```
+
+The result is `Ports/Luxor3/` with binaries, `luxor3.sh`, and a local copy of
+your game data. See `BUILD.md` for the launcher and device notes.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs three jobs on every push and pull request, and
