@@ -103,8 +103,12 @@ struct Track {
     std::vector<Vec2> verts;
     std::vector<TrackSection> sections;
     std::vector<NamedPoint> named_points;
+    // Track section junctions: section-name -> section names sharing its end vertex.
+    // Derived from the source vertex indices while parsing LX3TRK.
+    std::map<std::string, std::vector<std::string>> next_sections;
 
     const TrackSection* find_section(const std::string& name) const;
+    std::vector<std::string> sections_after(const std::string& name) const;
     const NamedPoint* find_named(const std::string& name) const;
 
     // Position along a section at arc-length `s` pixels from its start.
@@ -115,6 +119,46 @@ struct Track {
 };
 
 bool load_track(const std::string& path, Track* out, std::string* err);
+
+// Map-specific gameplay metadata from pathGamePlayData.txt. The source file
+// provides per-section speed overrides, switch routing, and restrictions.
+// Parsing these values does not by itself reproduce the original runtime rules.
+struct TrackSwitchLeg {
+    std::string section;
+    std::string named_point;
+};
+struct TrackSwitch {
+    std::string pivot_section;
+    std::string pivot_point;
+    std::vector<TrackSwitchLeg> legs;
+};
+struct PathGameplayData {
+    float min_scale = 0.0f;
+    float max_scale = 0.0f;
+    bool has_min_scale = false;
+    bool has_max_scale = false;
+    std::map<std::string, float> start_speed;
+    std::map<std::string, float> end_speed;
+    std::vector<std::string> danger_sections;
+    std::vector<std::string> occluded_sections;
+    std::vector<std::string> unshootable_sections;
+    std::vector<std::string> spawn_restrictive_sections;
+    std::vector<std::string> underwater_sections;
+    std::map<std::string, std::string> switch_state;
+    std::vector<TrackSwitch> switches;
+    std::vector<std::string> unknown_directives;
+};
+bool load_path_gameplay_data(const std::string& path, PathGameplayData* out,
+                             std::string* err);
+
+// Generic name/value config parser for GameVariables.txt and similar files.
+// Values stay textual intentionally; callers must interpret types per key.
+struct NameValueConfig {
+    std::map<std::string, std::string> values;
+    std::vector<std::string> included_files;
+};
+bool load_name_value_config(const std::string& path, NameValueConfig* out,
+                            std::string* err);
 
 // ---------------------------------------------------------------- animation
 // An animation is a list of frames plus playback metadata, exactly as the

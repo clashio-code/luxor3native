@@ -22,6 +22,14 @@ target_link_libraries(luxor3_test PRIVATE luxor3_core)
 add_executable(luxor3_preview tool_preview.cpp preview.cpp)
 target_link_libraries(luxor3_preview PRIVATE luxor3_core)
 
+# Read-only audit tools. They print what the parsers find in a data tree and
+# never modify it; useful locally against a real installation.
+add_executable(luxor3_config_audit config_audit.cpp)
+target_link_libraries(luxor3_config_audit PRIVATE luxor3_core)
+
+add_executable(luxor3_level_audit level_audit.cpp)
+target_link_libraries(luxor3_level_audit PRIVATE luxor3_core)
+
 enable_testing()
 add_test(NAME core
          COMMAND luxor3_test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/mini_game)

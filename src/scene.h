@@ -40,19 +40,38 @@ struct Scene {
 // ---------------------------------------------------------------- simulation
 // Train motion constants, taken verbatim from the original GameVariables.txt.
 struct TrainTuning {
-    float start_speed = 800.0f;    // DefaultTrackStartSpeed
-    float end_speed = 2.0f;        // DefaultTrackEndSpeed
-    float acceleration = 200.0f;   // TrainAcceleration
+    float start_speed = 800.0f;    // DefaultTrackStartSpeed fallback (not loaded yet)
+    float end_speed = 2.0f;        // DefaultTrackEndSpeed fallback (not loaded yet)
+    float acceleration = 200.0f;   // TrainAcceleration fallback
     float high_acceleration = 800.0f;
 };
+
+// Apply a verified data value explicitly; no gameplay consumes this object
+// until a future, separately reviewed integration step.
+bool load_train_tuning(const NameValueConfig& variables, TrainTuning* out,
+                       std::string* err);
 
 // Advances one train along its section. `distance` is arc length in pixels.
 // The train accelerates from start_speed toward the point where it should
 // stop, exactly like the original: a train slows as it nears the end of its
 // section so it can be destroyed there.
+// A train that walks the whole track: it keeps a list of the sections it
+// still has to travel through, so it does not freeze at the end of the
+// section it started on.
+struct TrainRoute {
+    std::vector<std::string> sections;   // remaining sections, in order
+    size_t index = 0;                    // current section within `sections`
+};
+
+// Builds a route that starts at `start` and follows the track junctions.
+// Returns false when the start section is unknown.
+bool build_route(const Track& track, const std::string& start, TrainRoute* out);
+
 void advance_train(Train* train, const Track& track, const TrainTuning& tuning,
                    float dt, int trains_alive);
-
+void advance_train_route(Train* train, const Track& track,
+                         const TrainTuning& tuning, TrainRoute* route, float dt,
+                         int trains_alive);
 // First playable shooter loop: projectiles travel toward the train, insert a
 // ball at contact, and remove runs of three or more matching colors.
 struct Projectile {

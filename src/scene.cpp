@@ -9,6 +9,8 @@
 
 namespace luxor {
 
+// PROTOTYPE ONLY: the input normalization and aim limits below have not been
+// confirmed against Luxor 3 behavior. See docs/GAMEPLAY_RULES.md.
 void set_aim(ShooterState* shooter, float x, float y) {
     if (!shooter) return;
     const float length = std::sqrt(x * x + y * y);
@@ -20,6 +22,9 @@ void set_aim(ShooterState* shooter, float x, float y) {
     shooter->aim_y = std::sin(shooter->angle);
 }
 
+// PROTOTYPE ONLY: projectile speed, muzzle offset, ammo advance, collision,
+// insertion, match threshold, and score have not been verified against the
+// original game. See docs/GAMEPLAY_RULES.md.
 void fire_shot(ShooterState* shooter, float speed) {
     if (!shooter || speed <= 0.0f) return;
     Projectile shot;
@@ -33,6 +38,10 @@ void fire_shot(ShooterState* shooter, float speed) {
                                          static_cast<int>(Flavor::Count));
 }
 
+// PROTOTYPE ONLY: see docs/GAMEPLAY_RULES.md. The original separates ammo
+// selection per mode (classic, puzzle, crossing-the-Nile, treasure hunter)
+// and applies the level's allowed flavors; the cyclic enum advance here is
+// not that behavior.
 void advance_shooter(ShooterState* shooter, std::vector<Train>* trains,
                      const Track& track, float dt) {
     if (!shooter || !trains || dt <= 0.0f) return;
@@ -112,6 +121,72 @@ void advance_shooter(ShooterState* shooter, std::vector<Train>* trains,
     }
 }
 
+bool build_route(const Track& track, const std::string& start, TrainRoute* out) {
+    // PROTOTYPE ONLY: choosing the first unvisited vertex-connected section
+    // ignores SwitchState/SwitchGate and pathGamePlayData restrictions.
+    if (!out) return false;
+    out->sections.clear();
+    out->index = 0;
+    if (!track.find_section(start)) return false;
+    out->sections.push_back(start);
+    // Follow the junctions, never repeating a section, so a route terminates
+    // even when the track graph has a cycle.
+    std::string current = start;
+    for (size_t guard = 0; guard < 64; ++guard) {
+        std::vector<std::string> next = track.sections_after(current);
+        bool moved = false;
+        for (const auto& candidate : next) {
+            bool already = false;
+            for (const auto& s : out->sections)
+                if (s == candidate) { already = true; break; }
+            if (already) continue;
+            out->sections.push_back(candidate);
+            current = candidate;
+            moved = true;
+            break;
+        }
+        if (!moved) break;
+    }
+    return true;
+}
+
+namespace {
+
+// Position of a point that is `s` pixels back along the route from the head of
+// `route`, crossing section boundaries when needed.
+bool route_point(const Track& track, const TrainRoute& route, float s, Vec2* out,
+                 float* tangent) {
+    if (route.sections.empty()) return false;
+    size_t index = route.index;
+    float remaining = s;
+    while (true) {
+        if (index >= route.sections.size()) {
+            // Past the end of the route: clamp to its last point.
+            index = route.sections.size() - 1;
+            remaining = 0.0f;
+        }
+        const std::string& name = route.sections[index];
+        const TrackSection* sec = track.find_section(name);
+        if (!sec || sec->length <= 0.0f) {
+            if (index + 1 >= route.sections.size()) return false;
+            ++index;
+            continue;
+        }
+        if (remaining <= sec->length || index + 1 >= route.sections.size()) {
+            float local = std::min(remaining, sec->length);
+            if (!track.point_at(name, local, out)) return false;
+            if (tangent) {
+                if (!track.tangent_at(name, local, tangent)) *tangent = 0.0f;
+            }
+            return true;
+        }
+        remaining -= sec->length;
+        ++index;
+    }
+}
+
+}  // namespace
+
 void advance_train(Train* train, const Track& track, const TrainTuning& tuning,
                    float dt, int trains_alive) {
     if (!train || dt <= 0.0f) return;
@@ -154,6 +229,86 @@ void advance_train(Train* train, const Track& track, const TrainTuning& tuning,
         }
         float ang = 0.0f;
         if (track.tangent_at(train->section, s, &ang)) {
+            train->balls[i].angle = ang;
+        }
+    }
+}
+
+// Advances a train that walks a multi-section route. The train keeps moving
+// across section boundaries instead of stopping at the end of its first
+// section, which is what the original does.
+void advance_train_route(Train* train, const Track& track,
+                         const TrainTuning& tuning, TrainRoute* route, float dt,
+                         int trains_alive) {
+    if (!train || !route || dt <= 0.0f) return;
+    if (route->sections.empty()) return;
+    if (route->index >= route->sections.size()) route->index = 0;
+
+    // Distance is measured along the whole route, so switching sections does
+    // not move the train backwards.
+    float head = 0.0f;
+    for (size_t i = 0; i < route->index; ++i) {
+        const TrackSection* sec = track.find_section(route->sections[i]);
+        head += sec ? sec->length : 0.0f;
+    }
+    const TrackSection* current = track.find_section(route->sections[route->index]);
+    if (!current || current->length <= 0.0f) return;
+    const float local = train->distance;
+
+    // The train slows down over the last stretch of the *route*, not just the
+    // last stretch of the current section, so it arrives at a junction slowly.
+    float total_length = 0.0f;
+    for (const auto& name : route->sections) {
+        const TrackSection* sec = track.find_section(name);
+        if (sec) total_length += sec->length;
+    }
+    const float travelled = head + local;
+    const float route_remaining = std::max(0.0f, total_length - travelled);
+    float target = tuning.start_speed;
+    if (route_remaining < 200.0f) {
+        target = std::max(tuning.end_speed,
+                          tuning.start_speed * (route_remaining / 200.0f));
+    }
+    float accel = (trains_alive > 2) ? tuning.high_acceleration : tuning.acceleration;
+    if (train->speed < target)
+        train->speed = std::min(target, train->speed + accel * dt);
+    else
+        train->speed = std::max(target, train->speed - accel * dt);
+    if (train->speed < 0.0f) train->speed = 0.0f;
+
+    train->distance += train->speed * dt;
+
+    // Cross into the next section when the head runs past this one.
+    while (train->distance > current->length) {
+        if (route->index + 1 >= route->sections.size()) {
+            train->distance = current->length;
+            break;
+        }
+        train->distance -= current->length;
+        ++route->index;
+        const TrackSection* next = track.find_section(route->sections[route->index]);
+        if (!next || next->length <= 0.0f) {
+            --route->index;
+            train->distance = current->length;
+            break;
+        }
+        current = next;
+    }
+    if (train->distance > current->length) train->distance = current->length;
+    train->section = current->name;
+
+    // Place the balls along the route so the whole train follows the bends.
+    const float spacing = train->balls.empty() ? 32.0f
+                                               : train->balls[0].radius * 2.0f;
+    const float route_head = head + train->distance;
+    for (size_t i = 0; i < train->balls.size(); ++i) {
+        float back = static_cast<float>(i) * spacing;
+        float s = route_head - back;
+        if (s < 0.0f) s = 0.0f;
+        Vec2 p;
+        float ang = 0.0f;
+        if (route_point(track, *route, s, &p, &ang)) {
+            train->balls[i].pos = p;
             train->balls[i].angle = ang;
         }
     }

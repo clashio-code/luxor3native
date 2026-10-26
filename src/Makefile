@@ -35,6 +35,14 @@ luxor3_test: test_core.o $(CORE_OBJ:game.o=) core.o scene.o stb_impl.o
 luxor3_preview: tool_preview.o preview.o core.o scene.o stb_impl.o
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS)
 
+# Read-only audit tools: they report what the parsers find in a data tree and
+# never modify it. Useful locally against a real installation.
+luxor3_config_audit: config_audit.o core.o scene.o stb_impl.o
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS)
+
+luxor3_level_audit: level_audit.o core.o scene.o stb_impl.o
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS)
+
 # ---- SDL2 targets ---------------------------------------------------------
 luxor3: main.o game.o sdl2d.o $(CORE_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(SDL_LIBS) $(LDLIBS)
@@ -63,4 +71,4 @@ preview: luxor3_preview
 	./luxor3_preview "$(GAME_ROOT)" "$(GAME_ROOT)/data/levels/classic/A_1_1.lvl" preview.png
 
 clean:
-	rm -f *.o luxor3_test luxor3_preview luxor3 luxor3_gl device_probe preview.png
+	rm -f *.o luxor3_test luxor3_preview luxor3_config_audit luxor3_level_audit luxor3 luxor3_gl device_probe preview.png

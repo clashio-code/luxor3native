@@ -1,0 +1,16 @@
+// Synthetic path gameplay metadata for parser CI.
+MinScale 0.85
+MaxScale 1.0
+StartSpeed main 120
+EndSpeed main 70
+Danger branch
+Occluded hidden
+Unshootable hidden
+SpawnRestrictive branch
+Underwater exit
+SwitchState main branch
+SwitchGate
+{
+    Pivot "main" "point_pivot"
+    Leg "branch" "point_leg"
+}

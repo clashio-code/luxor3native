@@ -296,8 +296,35 @@ static void run_fixture_tests(const std::string& root, const PathTable& paths) {
         CHECK(lv.music == "LevelMusicClassic", "fixture music");
         CHECK(lv.num_trains == 2, "fixture num_trains=2");
         CHECK(lv.spheres_per_train == 7, "fixture spheres=7 (TrainConstructionData)");
-        CHECK(lv.spawn_order.size() == 1 && lv.spawn_order[0] == "main",
+    CHECK(lv.spawn_order.size() == 1 && lv.spawn_order[0] == "main",
               "fixture spawn_order = main");
+        PathGameplayData pg;
+        std::string pg_err;
+        CHECK(load_path_gameplay_data(root + "/data/maps/testmap/pathGamePlayData.txt", &pg, &pg_err),
+              "parse fixture pathGamePlayData.txt");
+        CHECK(pg.has_min_scale && pg.min_scale == 0.85f &&
+              pg.has_max_scale && pg.max_scale == 1.0f,
+              "fixture path scales parse");
+        CHECK(pg.start_speed.count("main") == 1 && pg.start_speed["main"] == 120.0f &&
+              pg.end_speed.count("main") == 1 && pg.end_speed["main"] == 70.0f,
+              "fixture section speed overrides parse");
+        CHECK(pg.danger_sections.size() == 1 && pg.occluded_sections.size() == 1 &&
+              pg.unshootable_sections.size() == 1 && pg.spawn_restrictive_sections.size() == 1 &&
+              pg.underwater_sections.size() == 1,
+              "fixture path restrictions parse");
+        CHECK(pg.switch_state.count("main") == 1 && pg.switch_state["main"] == "branch" &&
+              pg.switches.size() == 1 && pg.switches[0].legs.size() == 1 &&
+              pg.switches[0].pivot_point == "point_pivot",
+              "fixture switch state and gate parse");
+        NameValueConfig config;
+        std::string cfg_err;
+        CHECK(load_name_value_config(root + "/data/GameVariables.txt", &config, &cfg_err),
+              "parse fixture GameVariables.txt with include");
+        CHECK(config.values["TrainAcceleration"] == "200.0" &&
+              config.values["ShooterSecondsBeforeNextShot"] == "0.5" &&
+              config.values["DifficultyTest"] == "1.25" &&
+              config.included_files.size() == 1,
+              "name/value parser loads keys and included file");
         // The level's only flavors come from flavors_1.txt via #include.
         auto it = lv.flavors.find("Easy");
         CHECK(it != lv.flavors.end() && it->second.size() == 2,

@@ -222,6 +222,15 @@ const NamedPoint* Track::find_named(const std::string& name) const {
     return nullptr;
 }
 
+std::vector<std::string> Track::sections_after(const std::string& name) const {
+    auto it = next_sections.find(name);
+    if (it != next_sections.end()) return it->second;
+    // Fall back to a case-insensitive lookup so mixed-case references work.
+    for (const auto& kv : next_sections)
+        if (to_lower(kv.first) == to_lower(name)) return kv.second;
+    return std::vector<std::string>();
+}
+
 bool Track::point_at(const std::string& section, float s, Vec2* out) const {
     const TrackSection* sec = find_section(section);
     if (!sec || sec->points.empty()) return false;
@@ -358,6 +367,189 @@ bool load_track(const std::string& path, Track* out, std::string* err) {
         }
         sec.length = len;
     }
+
+    // Build the junction graph. Two sections are connected when the last
+    // vertex of one equals the first vertex of the other; the original track
+    // files spell this out by reusing vertex indices, so no extra data is
+    // needed. A section may feed several successors (forks).
+    for (const auto& sec : out->sections) {
+        if (sec.vertex_indices.empty()) continue;
+        const int end_vertex = sec.vertex_indices.back();
+        for (const auto& other : out->sections) {
+            if (other.name == sec.name) continue;
+            if (other.vertex_indices.empty()) continue;
+            if (other.vertex_indices.front() != end_vertex) continue;
+            auto& list = out->next_sections[sec.name];
+            bool present = false;
+            for (const auto& n : list) if (n == other.name) { present = true; break; }
+            if (!present) list.push_back(other.name);
+        }
+    }
+    if (err) err->clear();
+    return true;
+}
+
+// ------------------------------------------------------- map gameplay data
+// pathGamePlayData.txt is optional per map and uses a small directive set.
+// Source data spells some directives with inconsistent case (e.g. "danger",
+// "maxScale", "EndSPeed"), so every lookup is case-insensitive. The original
+// engine parses this file; reading the values here does not prove how they
+// are applied at runtime.
+// tokenize() already strips surrounding quotes, so tokens are used as-is.
+static bool vector_contains(const std::vector<std::string>& list,
+                            const std::string& value) {
+    for (const auto& item : list) if (item == value) return true;
+    return false;
+}
+
+bool load_path_gameplay_data(const std::string& path, PathGameplayData* out,
+                             std::string* err) {
+    if (!out) {
+        if (err) *err = "null output";
+        return false;
+    }
+    *out = PathGameplayData();
+    std::string text;
+    if (!read_file(path, &text)) {
+        if (err) *err = "cannot read " + path;
+        return false;
+    }
+
+    std::istringstream input(text);
+    std::string line;
+    while (std::getline(input, line)) {
+        line = trim(strip_comment(line));
+        if (line.empty() || line == "{" || line == "}") continue;
+        std::vector<std::string> tokens = tokenize(line);
+        if (tokens.empty()) continue;
+        const std::string key = to_lower(tokens[0]);
+        if (key == "minscale" && tokens.size() > 1) {
+            out->min_scale = static_cast<float>(atof(tokens[1].c_str()));
+            out->has_min_scale = true;
+        } else if (key == "maxscale" && tokens.size() > 1) {
+            out->max_scale = static_cast<float>(atof(tokens[1].c_str()));
+            out->has_max_scale = true;
+        } else if (key == "startspeed" && tokens.size() > 2) {
+            out->start_speed[tokens[1]] =
+                static_cast<float>(atof(tokens[2].c_str()));
+        } else if (key == "endspeed" && tokens.size() > 2) {
+            out->end_speed[tokens[1]] =
+                static_cast<float>(atof(tokens[2].c_str()));
+        } else if (key == "danger" && tokens.size() > 1) {
+            const std::string name = tokens[1];
+            if (!vector_contains(out->danger_sections, name))
+                out->danger_sections.push_back(name);
+        } else if (key == "occluded" && tokens.size() > 1) {
+            const std::string name = tokens[1];
+            if (!vector_contains(out->occluded_sections, name))
+                out->occluded_sections.push_back(name);
+        } else if (key == "unshootable" && tokens.size() > 1) {
+            const std::string name = tokens[1];
+            if (!vector_contains(out->unshootable_sections, name))
+                out->unshootable_sections.push_back(name);
+        } else if (key == "spawnrestrictive" && tokens.size() > 1) {
+            const std::string name = tokens[1];
+            if (!vector_contains(out->spawn_restrictive_sections, name))
+                out->spawn_restrictive_sections.push_back(name);
+        } else if (key == "underwater" && tokens.size() > 1) {
+            const std::string name = tokens[1];
+            if (!vector_contains(out->underwater_sections, name))
+                out->underwater_sections.push_back(name);
+        } else if (key == "switchstate" && tokens.size() > 2) {
+            out->switch_state[tokens[1]] = tokens[2];
+        } else if (key == "switchgate") {
+            // The block is consumed until the matching closing brace.
+            TrackSwitch current;
+            while (std::getline(input, line)) {
+                line = trim(strip_comment(line));
+                if (line.empty() || line == "{") continue;
+                if (line == "}") break;
+                std::vector<std::string> inner = tokenize(line);
+                if (inner.empty()) continue;
+                const std::string inner_key = to_lower(inner[0]);
+                if (inner_key == "pivot" && inner.size() > 2) {
+                    current.pivot_section = inner[1];
+                    current.pivot_point = inner[2];
+                } else if (inner_key == "leg" && inner.size() > 2) {
+                    TrackSwitchLeg leg;
+                    leg.section = inner[1];
+                    leg.named_point = inner[2];
+                    current.legs.push_back(leg);
+                } else if (inner_key == "pivot" || inner_key == "leg") {
+                    out->unknown_directives.push_back(line);
+                }
+            }
+            if (!current.pivot_section.empty()) out->switches.push_back(current);
+        } else {
+            out->unknown_directives.push_back(line);
+        }
+    }
+    if (err) err->clear();
+    return true;
+}
+
+// --------------------------------------------------------- name/value config
+// GameVariables.txt and similar files are flat "Name value" lists, with
+// values commonly quoted and #include pulling in more of the same shape.
+// Values remain strings here; interpreting "200.0" as a float is the caller's
+// decision, not this parser's.
+static void merge_name_value_lines(const std::string& text,
+                                   const std::string& base_dir,
+                                   NameValueConfig* out,
+                                   std::vector<std::string>* seen) {
+    std::istringstream input(text);
+    std::string line;
+    while (std::getline(input, line)) {
+        line = trim(strip_comment(line));
+        if (line.empty()) continue;
+        size_t include_pos = line.find("#include");
+        if (include_pos != std::string::npos) {
+            size_t q1 = line.find('"', include_pos);
+            size_t q2 = q1 == std::string::npos ? std::string::npos
+                                                : line.find('"', q1 + 1);
+            if (q1 != std::string::npos && q2 != std::string::npos) {
+                std::string inc = line.substr(q1 + 1, q2 - q1 - 1);
+                out->included_files.push_back(inc);
+                std::string full = base_dir + "/" + inc;
+                bool already = false;
+                for (const auto& s : *seen) if (s == full) already = true;
+                if (!already) {
+                    seen->push_back(full);
+                    std::string sub;
+                    if (read_file(full, &sub))
+                        merge_name_value_lines(sub, base_dir, out, seen);
+                }
+            }
+            continue;
+        }
+        std::vector<std::string> tokens = tokenize(line);
+        if (tokens.empty()) continue;
+        std::string value;
+        for (size_t i = 1; i < tokens.size(); ++i) {
+            if (!value.empty()) value += " ";
+            value += tokens[i];
+        }
+        if (!value.empty()) out->values[tokens[0]] = value;
+    }
+}
+
+bool load_name_value_config(const std::string& path, NameValueConfig* out,
+                            std::string* err) {
+    if (!out) {
+        if (err) *err = "null output";
+        return false;
+    }
+    *out = NameValueConfig();
+    std::string text;
+    if (!read_file(path, &text)) {
+        if (err) *err = "cannot read " + path;
+        return false;
+    }
+    std::string base = path;
+    size_t slash = base.find_last_of('/');
+    if (slash != std::string::npos) base = base.substr(0, slash);
+    std::vector<std::string> seen{path};
+    merge_name_value_lines(text, base, out, &seen);
     if (err) err->clear();
     return true;
 }

@@ -122,6 +122,42 @@ MAP_INFO = """// Synthetic map fixture.
 MapName "#testmap"
 """
 
+PATH_GAMEPLAY = """// Synthetic path gameplay metadata for parser CI.
+MinScale 0.85
+MaxScale 1.0
+StartSpeed main 120
+EndSpeed main 70
+Danger branch
+Occluded hidden
+Unshootable hidden
+SpawnRestrictive branch
+Underwater exit
+SwitchState main branch
+SwitchGate
+{
+    Pivot "main" "point_pivot"
+    Leg "branch" "point_leg"
+}
+"""
+
+GAME_VARIABLES = """// Synthetic variables fixture for parser CI.
+TrainAcceleration "200.0"
+TrainHighAcceleration "800.0"
+DefaultTrackStartSpeed "800.0"
+DefaultTrackEndSpeed "2.0"
+ShooterSecondsBeforeNextShot "0.5"
+BonusPerComboCollapse "750"
+#include "difficulty_extra.txt"
+"""
+
+DIFFICULTY_EXTRA = """DifficultyTest "1.25"
+"""
+
+DIFFICULTY_VARIABLES = """// Synthetic difficulty variables fixture for parser CI.
+EasySpawnStreak "0.5"
+HardSpawnStreak "0.75"
+"""
+
 
 def write(path, data, binary=False):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -134,8 +170,12 @@ def main(out_dir):
     root = os.path.abspath(out_dir)
     write(os.path.join(root, 'data/maps/testmap/path.LX3TRK'), TRACK)
     write(os.path.join(root, 'data/maps/testmap/MapInfo.txt'), MAP_INFO)
+    write(os.path.join(root, 'data/maps/testmap/pathGamePlayData.txt'), PATH_GAMEPLAY)
     write(os.path.join(root, 'data/levels/classic/flavors_1.txt'), FLAVORS)
     write(os.path.join(root, 'data/levels/classic/T_1_1.lvl'), LEVEL)
+    write(os.path.join(root, 'data/GameVariables.txt'), GAME_VARIABLES)
+    write(os.path.join(root, 'data/DifficultyGameVariables.txt'), DIFFICULTY_VARIABLES)
+    write(os.path.join(root, 'data/difficulty_extra.txt'), DIFFICULTY_EXTRA)
     write(os.path.join(root, 'data/gfx/balls/red/ball0000.png'),
           png_rgba(32, 32, ball_pixel), binary=True)
     write(os.path.join(root, 'data/maps/testmap/back_01.png'),

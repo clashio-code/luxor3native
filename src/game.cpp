@@ -62,6 +62,8 @@ int run_game(int argc, char** argv, Presenter* p) {
         log_line("game", "no usable spawn section for level");
         return 1;
     }
+    // PROTOTYPE ONLY: this level-driven geometry heuristic is not verified as
+    // the original game's shooter placement rule. See docs/GAMEPLAY_RULES.md.
     if (play_section->points.size() >= 2) {
         const Vec2& a = play_section->points[0];
         const Vec2& b = play_section->points[1];
@@ -109,6 +111,15 @@ int run_game(int argc, char** argv, Presenter* p) {
     }
     std::vector<Train> trains{train};
     TrainTuning tuning;
+    // The train walks the whole track through the section junctions, so it
+    // never freezes at the end of the section it spawned on.
+    TrainRoute route;
+    if (!build_route(track, section, &route) || route.sections.empty()) {
+        log_line("game", "no route from section '%s'", section.c_str());
+        return 1;
+    }
+    log_line("game", "route: %zu sections from '%s'", route.sections.size(),
+             route.sections[0].c_str());
 
     int joysticks = SDL_NumJoysticks();
     if (joysticks > 0)
@@ -248,7 +259,7 @@ int run_game(int argc, char** argv, Presenter* p) {
             }
         }
 
-        advance_train(&trains[0], track, tuning, dt, 1);
+        advance_train_route(&trains[0], track, tuning, &route, dt, 1);
         if (game_controller) {
             Sint16 ax = SDL_GameControllerGetAxis(game_controller, SDL_CONTROLLER_AXIS_RIGHTX);
             Sint16 ay = SDL_GameControllerGetAxis(game_controller, SDL_CONTROLLER_AXIS_RIGHTY);

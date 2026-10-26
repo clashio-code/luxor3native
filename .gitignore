@@ -12,6 +12,15 @@ unins000.dat
 /build/
 /build-*/
 /dist/
+/src/*.o
+/src/luxor3_test
+/src/luxor3_preview
+/src/luxor3
+/src/luxor3_gl
+/src/device_probe
+/src/config_audit
+/src/level_audit
+/src/sim_probe
 /third_party/SDL2/
 /src/cmake/*.cache
 

@@ -1,0 +1,8 @@
+// Synthetic variables fixture for parser CI.
+TrainAcceleration "200.0"
+TrainHighAcceleration "800.0"
+DefaultTrackStartSpeed "800.0"
+DefaultTrackEndSpeed "2.0"
+ShooterSecondsBeforeNextShot "0.5"
+BonusPerComboCollapse "750"
+#include "difficulty_extra.txt"
