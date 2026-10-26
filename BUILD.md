@@ -110,12 +110,12 @@ from a private/local source; see `docs/ASSET_POLICY.md`.
 Use a unique folder and launcher; never overwrite another port:
 
 ```text
-/mnt/SDCARD/Ports/Luxor3/
-  luxor3_gl    # native ARM Linux executable (GLES2 + 2D fallback)
-  luxor3       # native ARM Linux executable (2D only)
-  device_probe # runtime probe, for checking the video driver on the device
-  data/        # user-supplied game data, local/private
-  luxor3.sh    # PortMaster/muOS launcher
+/SD2/ROMS/Ports/luxor3.sh   # launcher discovered by the muOS Ports menu
+/SD2/ports/luxor3/
+  luxor3_gl                 # native ARM Linux executable (GLES2 + 2D fallback)
+  luxor3                    # native ARM Linux executable (2D only)
+  device_probe              # runtime probe, for checking the video driver
+  data/                     # user-supplied game data, local/private
 ```
 
 Assemble it from the Actions artifact with:

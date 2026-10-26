@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Assemble a clean RG40XXV/muOS folder from the GitHub Actions artifact.
 
-The game data is copyrighted and is deliberately NOT copied by this script.
-It copies the arm64 executables from the extracted Actions artifact, creates
-Ports/Luxor3/ on the destination SD card, and installs the launcher.
+The game data is copyrighted and is deliberately NOT committed to the repo.
+This creates the structure shown by the user's muOS SD card:
 
-Example:
-  python3 tools/package_sdcard.py \\
-    --artifact /path/to/luxor3-aarch64 \\
-    --sd-root /path/to/SDCARD \\
-    --game-data "/path/to/your/Luxor 3/data"
+  <SD root>/ports/luxor3/       binaries + the user's local data/
+  <SD root>/ROMS/Ports/luxor3.sh launcher discovered by the Ports menu
+
+Example (Windows PowerShell):
+  python tools\\package_sdcard.py `
+    --artifact "C:\\Users\\you\\Downloads\\luxor3-aarch64" `
+    --sd-root "D:\\" `
+    --game-data "C:\\Games\\Luxor 3\\data"
 
 The game-data path must point to a data/ folder from a copy you own. It stays
 local; the script never uploads or commits it.
@@ -44,8 +46,11 @@ def main() -> int:
     artifact = Path(args.artifact).expanduser().resolve()
     sd_root = Path(args.sd_root).expanduser().resolve()
     game_data = Path(args.game_data).expanduser().resolve()
-    port_dir = sd_root / "Ports" / "Luxor3"
+    # muOS keeps the launcher in ROMS/Ports and the payload in ports/<name>.
+    port_dir = sd_root / "ports" / "luxor3"
     dest_data = port_dir / "data"
+    launcher_dir = sd_root / "ROMS" / "Ports"
+    launcher_dest = launcher_dir / "luxor3.sh"
     launcher_src = Path(__file__).resolve().parents[1] / "sdcard" / "luxor3.sh"
     missing = [name for name in BINARIES if not (artifact / name).is_file()]
     if missing:
@@ -67,22 +72,24 @@ def main() -> int:
         shutil.copy2(source, target)
         target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    shutil.copy2(launcher_src, port_dir / "luxor3.sh")
-    (port_dir / "luxor3.sh").chmod(0o755)
+    launcher_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(launcher_src, launcher_dest)
+    launcher_dest.chmod(0o755)
 
     if dest_data.exists():
         shutil.rmtree(dest_data)
     # copytree preserves case-sensitive names and does not change the user's source.
     shutil.copytree(game_data, dest_data)
 
-    print("Luxor3 port folder assembled:")
-    print(f"  {port_dir}")
+    print("Luxor3 port assembled:")
+    print(f"  payload:  {port_dir}")
+    print(f"  launcher: {launcher_dest}")
     print("Binaries:")
     for name in BINARIES:
         print(f"  {name}")
     print(f"Local game data copied from: {game_data}")
     print("The data folder was copied from your local installation; keep it private.")
-    print("Launch luxor3.sh from muOS Ports. SDL2 2D is the fallback renderer.")
+    print("The muOS Ports menu should now list Luxor3.")
     return 0
 
 
