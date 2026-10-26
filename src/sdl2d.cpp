@@ -134,6 +134,38 @@ void Renderer2D::present(const Scene& scene, const PathTable& paths,
                              SDL_FLIP_NONE);
         }
     }
+    for (const auto& item : scene.overlay_items) {
+        SDL_Texture* tex = upload(item.texture);
+        if (!tex) continue;
+        SDL_Rect dst{static_cast<int>(item.x), static_cast<int>(item.y),
+                     static_cast<int>(item.w), static_cast<int>(item.h)};
+        SDL_RenderCopyEx(impl_->renderer, tex, nullptr, &dst,
+                         item.angle * 180.0f / 3.14159265358979, nullptr,
+                         SDL_FLIP_NONE);
+    }
+    if (!scene.score_text.empty()) {
+        SDL_Rect panel{8, 8, 105, 27};
+        SDL_SetRenderDrawColor(impl_->renderer, 20, 13, 8, 200);
+        SDL_RenderFillRect(impl_->renderer, &panel);
+        static const uint8_t font[10][7] = {
+            {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14}, {14,17,1,2,4,8,31},
+            {30,1,1,14,1,1,30}, {2,6,10,18,31,2,2}, {31,16,16,30,1,1,30},
+            {14,16,16,30,17,17,14}, {31,1,2,4,8,8,8}, {14,17,17,14,17,17,14},
+            {14,17,17,15,1,1,14}
+        };
+        int x = 12;
+        SDL_SetRenderDrawColor(impl_->renderer, 255, 238, 128, 255);
+        for (char c : scene.score_text) {
+            if (c == ' ') { x += 6; continue; }
+            if (c >= '0' && c <= '9') {
+                for (int y = 0; y < 7; ++y)
+                    for (int col = 0; col < 5; ++col)
+                        if (font[c - '0'][y] & (1 << (4 - col)))
+                            SDL_RenderDrawPoint(impl_->renderer, x + col, 12 + y);
+                x += 7;
+            }
+        }
+    }
     SDL_RenderPresent(impl_->renderer);
 }
 

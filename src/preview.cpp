@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <string>
 #include <vector>
 
 #define STB_IMAGE_NO_STDIO
@@ -153,6 +154,33 @@ bool render_scene(const Scene& scene, const PathTable& paths,
         draw_textured(*fb, *img, item.texture, item.x, item.y, item.w, item.h,
                       item.angle, item.u0, item.v0, item.u1, item.v1,
                       Rgba{item.r, item.g, item.b, item.a});
+    }
+    for (const auto& item : scene.overlay_items) {
+        const Image* img = load(item.texture);
+        if (!img || !img->valid()) continue;
+        draw_textured(*fb, *img, item.texture, item.x, item.y, item.w, item.h,
+                      item.angle, item.u0, item.v0, item.u1, item.v1,
+                      Rgba{item.r, item.g, item.b, item.a});
+    }
+
+    if (!scene.score_text.empty()) {
+        static const uint8_t font[10][7] = {
+            {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14}, {14,17,1,2,4,8,31},
+            {30,1,1,14,1,1,30}, {2,6,10,18,31,2,2}, {31,16,16,30,1,1,30},
+            {14,16,16,30,17,17,14}, {31,1,2,4,8,8,8}, {14,17,17,14,17,17,14},
+            {14,17,17,15,1,1,14}
+        };
+        int x = 12;
+        for (char c : scene.score_text) {
+            if (c == ' ') { x += 6; continue; }
+            if (c >= '0' && c <= '9') {
+                for (int y = 0; y < 7; ++y)
+                    for (int col = 0; col < 5; ++col)
+                        if (font[c - '0'][y] & (1 << (4 - col)))
+                            blend(*fb, x + col, 12 + y, Rgba{1.0f, 0.93f, 0.5f, 1.0f});
+                x += 7;
+            }
+        }
     }
 
     if (err) err->clear();

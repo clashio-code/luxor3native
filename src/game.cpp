@@ -5,6 +5,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
+#include <algorithm>
 #include <vector>
 
 namespace luxor {
@@ -50,6 +52,37 @@ int run_game(int argc, char** argv, Presenter* p) {
     ctx.track = &track;
     ctx.level = &level;
     ctx.ball_size = 32.0f;
+    ShooterState shooter;
+    std::string section = track.sections.empty() ? "" : track.sections[0].name;
+    for (const auto& s : level.spawn_order) {
+        if (track.find_section(s)) { section = s; break; }
+    }
+    const TrackSection* play_section = track.find_section(section);
+    if (section.empty() || !play_section) {
+        log_line("game", "no usable spawn section for level");
+        return 1;
+    }
+    if (play_section->points.size() >= 2) {
+        const Vec2& a = play_section->points[0];
+        const Vec2& b = play_section->points[1];
+        float mid_x = (a.x + b.x) * 0.5f;
+        float tangent = std::atan2(b.y - a.y, b.x - a.x);
+        float nx = -std::sin(tangent), ny = std::cos(tangent);
+        float aim_x = (nx < 0.0f ? -nx : nx);
+        float aim_y = (nx < 0.0f ? -ny : ny);
+        float min_y = play_section->points[0].y;
+        float max_y = min_y;
+        for (const Vec2& point : play_section->points) {
+            min_y = std::min(min_y, point.y);
+            max_y = std::max(max_y, point.y);
+        }
+        float shoot_y = (min_y + max_y) * 0.5f;
+        // Keep the shooter below the playfield while respecting the screen bounds.
+        shooter.pos = {std::max(80.0f, std::min(720.0f, mid_x)),
+                       std::max(-580.0f, std::min(-500.0f, shoot_y - 260.0f))};
+        set_aim(&shooter, aim_x, aim_y);
+    }
+    ctx.shooter = &shooter;
     const char* flavor_files[] = {
         "data/gfx/balls/wild/ball_0013.png",
         "data/gfx/balls/black/ball0007.png",
@@ -64,11 +97,6 @@ int run_game(int argc, char** argv, Presenter* p) {
     };
     for (int i = 0; i < static_cast<int>(Flavor::Count); ++i)
         ctx.ball_texture[i] = paths.resolve(flavor_files[i]);
-
-    std::string section = track.sections.empty() ? "" : track.sections[0].name;
-    for (const auto& s : level.spawn_order) {
-        if (track.find_section(s)) { section = s; break; }
-    }
 
     Train train;
     train.section = section;
@@ -112,6 +140,8 @@ int run_game(int argc, char** argv, Presenter* p) {
     bool running = true;
     bool select_down = false;
     bool start_down = false;
+    bool fire_down = false;
+    bool swap_down = false;
     uint32_t last = SDL_GetTicks();
     long frame = 0;
     while (running) {
@@ -120,7 +150,37 @@ int run_game(int argc, char** argv, Presenter* p) {
             if (ev.type == SDL_QUIT) running = false;
             if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE)
                 running = false;
+            if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_SPACE)
+                fire_shot(&shooter);
+            if (ev.type == SDL_MOUSEMOTION) {
+                float dx = static_cast<float>(ev.motion.x) * kLogicalWidth / 640.0f - shooter.pos.x;
+                float dy = -static_cast<float>(ev.motion.y) * kLogicalHeight / 480.0f - shooter.pos.y;
+                set_aim(&shooter, dx, dy);
+            }
+            if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT)
+                fire_shot(&shooter);
 
+            if (ev.type == SDL_CONTROLLERBUTTONDOWN &&
+                ev.cbutton.button == SDL_CONTROLLER_BUTTON_A && !fire_down) {
+                fire_shot(&shooter);
+                fire_down = true;
+            }
+            if (ev.type == SDL_CONTROLLERBUTTONUP &&
+                ev.cbutton.button == SDL_CONTROLLER_BUTTON_A)
+                fire_down = false;
+            if (ev.type == SDL_CONTROLLERBUTTONDOWN &&
+                ev.cbutton.button == SDL_CONTROLLER_BUTTON_X && !swap_down) {
+                std::swap(shooter.loaded, shooter.next);
+                swap_down = true;
+            }
+            if (ev.type == SDL_CONTROLLERBUTTONUP &&
+                ev.cbutton.button == SDL_CONTROLLER_BUTTON_X)
+                swap_down = false;
+            // Right-stick aiming is polled below each frame.
+            if (ev.type == SDL_JOYBUTTONDOWN) {
+                if (ev.jbutton.button == 3) fire_shot(&shooter);
+                if (ev.jbutton.button == 6) std::swap(shooter.loaded, shooter.next);
+            }
             if (ev.type == SDL_CONTROLLERBUTTONDOWN &&
                 (ev.cbutton.button == SDL_CONTROLLER_BUTTON_BACK ||
                  ev.cbutton.button == SDL_CONTROLLER_BUTTON_START)) {
@@ -175,7 +235,31 @@ int run_game(int argc, char** argv, Presenter* p) {
         if (dt > 0.1f) dt = 0.1f;
         last = now;
 
+        if (!game_controller && joystick) {
+            if (SDL_JoystickNumButtons(joystick) > 3) {
+                bool down = SDL_JoystickGetButton(joystick, 3) != 0;
+                if (down && !fire_down) fire_shot(&shooter);
+                fire_down = down;
+            }
+            if (SDL_JoystickNumButtons(joystick) > 6) {
+                bool down = SDL_JoystickGetButton(joystick, 6) != 0;
+                if (down && !swap_down) std::swap(shooter.loaded, shooter.next);
+                swap_down = down;
+            }
+        }
+
         advance_train(&trains[0], track, tuning, dt, 1);
+        if (game_controller) {
+            Sint16 ax = SDL_GameControllerGetAxis(game_controller, SDL_CONTROLLER_AXIS_RIGHTX);
+            Sint16 ay = SDL_GameControllerGetAxis(game_controller, SDL_CONTROLLER_AXIS_RIGHTY);
+            if (std::abs(ax) > 6000 || std::abs(ay) > 6000)
+                set_aim(&shooter, static_cast<float>(ax), -static_cast<float>(ay));
+        } else if (joystick) {
+            Sint16 ax = SDL_JoystickGetAxis(joystick, 2);
+            Sint16 ay = SDL_JoystickGetAxis(joystick, 3);
+            set_aim(&shooter, static_cast<float>(ax), -static_cast<float>(ay));
+        }
+        advance_shooter(&shooter, &trains, track, dt);
 
         Scene scene;
         build_scene(ctx, trains, static_cast<float>(now) / 1000.0f, &scene);

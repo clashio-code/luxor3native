@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@ struct Renderer::Impl {
     SDL_Window* window = nullptr;
     SDL_GLContext ctx = nullptr;
     SpriteBatch batch;
+    uint32_t score_texture = 0;
     std::map<std::string, uint32_t> textures;
     std::vector<uint8_t> scratch;
 };
@@ -133,6 +135,44 @@ void Renderer::present(const Scene& scene, const PathTable& paths,
             impl_->batch.draw(tex, item.x, item.y, item.w, item.h,
                               item.u0, item.v0, item.u1, item.v1,
                               item.r, item.g, item.b, item.a);
+        }
+    }
+    for (const auto& item : scene.overlay_items) {
+        uint32_t tex = upload(item.texture);
+        if (!tex) continue;
+        impl_->batch.draw_rotated(tex, item.x + item.w * 0.5f, item.y + item.h * 0.5f,
+                                  item.w, item.h, item.angle, item.u0, item.v0,
+                                  item.u1, item.v1, item.r, item.g, item.b, item.a);
+    }
+    if (!scene.score_text.empty()) {
+        static const uint8_t font[11][7] = {
+            {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14}, {14,17,1,2,4,8,31},
+            {30,1,1,14,1,1,30}, {2,6,10,18,31,2,2}, {31,16,16,30,1,1,30},
+            {14,16,16,30,17,17,14}, {31,1,2,4,8,8,8}, {14,17,17,14,17,17,14},
+            {14,17,17,15,1,1,14}, {0,0,0,0,0,0,0}
+        };
+        if (!impl_->score_texture) {
+            uint8_t pixels[32 * 16 * 4] = {};
+            for (int digit = 0; digit < 10; ++digit)
+                for (int y = 0; y < 7; ++y)
+                    for (int x = 0; x < 5; ++x)
+                        if (font[digit][y] & (1 << (4 - x))) {
+                            size_t off = (static_cast<size_t>(y) * 32 + digit * 3 + x) * 4;
+                            pixels[off] = pixels[off+1] = pixels[off+2] = pixels[off+3] = 255;
+                        }
+            impl_->score_texture = impl_->batch.create_texture(32, 16, pixels);
+        }
+        float x = 12.0f;
+        for (char c : scene.score_text) {
+            if (c == ' ') { x += 6.0f; continue; }
+            if (c >= '0' && c <= '9') {
+                int d = c - '0';
+                float u0 = static_cast<float>(d * 3) / 32.0f;
+                impl_->batch.draw(impl_->score_texture, x, 12.0f, 10.0f, 14.0f,
+                                  u0, 0.0f, u0 + 5.0f/32.0f, 7.0f/16.0f,
+                                  1.0f, 1.0f, 0.65f, 1.0f);
+                x += 11.0f;
+            }
         }
     }
     impl_->batch.flush();

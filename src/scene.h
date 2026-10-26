@@ -28,6 +28,9 @@ struct DrawItem {
 
 struct Scene {
     std::vector<DrawItem> items;
+    std::vector<DrawItem> overlay_items;  // projectiles and shooter, drawn above train
+    int score = 0;
+    std::string score_text;
     // Background is drawn first, stretched to the logical frame.
     std::string background;
     // Debug overlay: the track polyline, drawn as thin quads.
@@ -50,6 +53,30 @@ struct TrainTuning {
 void advance_train(Train* train, const Track& track, const TrainTuning& tuning,
                    float dt, int trains_alive);
 
+// First playable shooter loop: projectiles travel toward the train, insert a
+// ball at contact, and remove runs of three or more matching colors.
+struct Projectile {
+    Vec2 pos;
+    Vec2 velocity;
+    Flavor flavor = Flavor::Yellow;
+    float radius = 10.0f;
+    float age = 0.0f;
+};
+struct ShooterState {
+    Vec2 pos{400.0f, -500.0f};  // world coordinates
+    float angle = 0.785398163f;  // radians, world Y up; points into play area
+    float aim_x = 0.70710678f;
+    float aim_y = 0.70710678f;
+    Flavor loaded = Flavor::Red;
+    Flavor next = Flavor::Blue;
+    int score = 0;
+    std::vector<Projectile> shots;
+};
+void fire_shot(ShooterState* shooter, float speed = 700.0f);
+void set_aim(ShooterState* shooter, float x, float y);
+void advance_shooter(ShooterState* shooter, std::vector<Train>* trains,
+                     const Track& track, float dt);
+
 struct SceneContext {
     PathTable* paths = nullptr;
     const Track* track = nullptr;
@@ -57,6 +84,7 @@ struct SceneContext {
     // Texture for each ball flavor, resolved to data-relative paths.
     std::string ball_texture[static_cast<int>(Flavor::Count)];
     float ball_size = 32.0f;
+    ShooterState* shooter = nullptr;
 };
 
 // Builds the draw list for the current simulation state.

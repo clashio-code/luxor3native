@@ -11,6 +11,7 @@
 //
 // Exits non-zero on any failure.
 #include "luxor.h"
+#include "scene.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -217,9 +218,52 @@ static void run_fixture_tests(const std::string& root, const PathTable& paths) {
     std::string err;
     std::string track_path = root + "/data/maps/testmap/path.LX3TRK";
     if (load_track(track_path, &trk, &err)) {
-        CHECK(trk.verts.size() == 6, "fixture has 6 verts");
+        ShooterState shooter;
+        shooter.pos = {100.0f, -50.0f};
+        shooter.angle = 0.0f;
+        Train target;
+        target.section = "main";
+        target.distance = 50.0f;
+        target.speed = 0.0f;
+        target.balls.resize(2);
+        target.balls[0].flavor = Flavor::Red;
+        target.balls[1].flavor = Flavor::Red;
+        target.balls[0].radius = target.balls[1].radius = 16.0f;
+        target.balls[0].pos = {100.0f, -50.0f};
+        target.balls[1].pos = {100.0f, 0.0f};
+        std::vector<Train> targets{target};
+        fire_shot(&shooter, 100.0f);
+        CHECK(shooter.shots.size() == 1, "firing creates a projectile");
+        CHECK(shooter.loaded == Flavor::Blue, "firing loads next ball");
+        advance_shooter(&shooter, &targets, trk, 0.01f);
+        CHECK(shooter.shots.empty(), "projectile collides with train");
+        CHECK(targets[0].balls.empty() && shooter.score == 30,
+              "three matching balls clear and award score");
+
         CHECK(trk.sections.size() == 4, "fixture has 4 sections");
         CHECK(trk.named_points.size() == 2, "fixture has 2 named points");
+
+        Train chain;
+        chain.section = "main";
+        chain.distance = 50.0f;
+        chain.balls.resize(2);
+        for (auto& ball : chain.balls) {
+            ball.flavor = Flavor::Red;
+            ball.radius = 16.0f;
+        }
+        chain.balls[0].pos = {100.0f, -50.0f};
+        chain.balls[1].pos = {100.0f, 0.0f};
+        ShooterState miss;
+        miss.pos = {100.0f, 0.0f};
+        miss.angle = 0.0f;
+        miss.loaded = Flavor::Blue;
+        miss.next = Flavor::Red;
+        std::vector<Train> miss_targets{chain};
+        fire_shot(&miss, 100.0f);
+        advance_shooter(&miss, &miss_targets, trk, 0.01f);
+        CHECK(miss_targets[0].balls.size() == 3,
+              "nonmatching insertion leaves train intact");
+        CHECK(miss.score == 0, "no score for fewer than three");
 
         const TrackSection* main = trk.find_section("main");
         CHECK(main != nullptr && main->points.size() == 2, "main section loads");
