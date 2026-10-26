@@ -91,6 +91,7 @@ jobs:
             tools/case_audit.py \
             tools/pe_probe.py \
             tools/make_fixture.py \
+            tools/package_sdcard.py \
             tools/package_sdcard.py
 
       - name: Exercise the parser on the fixture

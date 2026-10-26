@@ -31,6 +31,8 @@ possible. The port ships an `SDL_Renderer` 2D backend for that case.
 - 43 headless assertions in `src/test_core.cpp`, all passing.
 - Two renderer backends sharing one scene: GLES2 (`src/sprite_batch.cpp`) and
   `SDL_Renderer` 2D (`src/sdl2d.cpp`), with automatic GL-to-2D fallback.
+- `Select + Start` controller chord exits the game on the handheld; `Escape`
+  also exits when a keyboard is available.
 - The 2D backend was smoke-tested end to end (window, texture upload, scene,
   frame loop) with `SDL_VIDEODRIVER=dummy`.
 - All 38 GL symbols used are core GLES2; no desktop-only entry points.
