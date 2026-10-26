@@ -1,0 +1,14 @@
+Khronos OpenGL ES 2.0 headers
+================================
+
+Files: GLES2/gl2.h, GLES2/gl2ext.h, GLES2/gl2platform.h
+
+Source: https://registry.khronos.org/OpenGL/api/GLES2/
+        (generated from https://github.com/KhronosGroup/OpenGL-Registry)
+
+Copyright 2013-2026 The Khronos Group Inc.
+SPDX-License-Identifier: MIT
+
+These headers are vendored so the port can be compiled on a host that does not
+ship GLES2 development packages. They contain no implementation; the device
+still links against the driver's libGLESv2.so.2.

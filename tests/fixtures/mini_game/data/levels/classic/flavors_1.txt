@@ -1,0 +1,8 @@
+AllowableGamePieceFlavors
+{
+	Easy
+	{
+		Yellow
+		Red
+	}
+}

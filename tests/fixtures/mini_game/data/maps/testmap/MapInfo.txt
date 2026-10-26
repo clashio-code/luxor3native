@@ -1,0 +1,2 @@
+// Synthetic map fixture.
+MapName "#testmap"

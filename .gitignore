@@ -1,0 +1,21 @@
+# Copyrighted Luxor 3 assets - never commit (see docs/ASSET_POLICY.md)
+/data/
+/assets/
+.asset-cache/
+Luxor3.exe
+fmod.dll
+unins000.exe
+unins000.dat
+*.spl
+
+# Build output
+/build/
+/build-*/
+/dist/
+/third_party/SDL2/
+/src/cmake/*.cache
+
+# Local runtime state
+/save/
+config/local*
+*.log

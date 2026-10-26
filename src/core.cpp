@@ -1,0 +1,531 @@
+// Luxor3 Native - core implementation (no SDL2 dependency).
+#include "luxor.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <map>
+#include <sstream>
+
+#include <dirent.h>
+#include <sys/stat.h>
+
+#define STB_IMAGE_NO_STDIO
+#include "stb_image.h"
+
+namespace luxor {
+
+// ---------------------------------------------------------------- logging
+void log_line(const char* tag, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "[%s] ", tag);
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
+    va_end(ap);
+}
+
+// ---------------------------------------------------------------- paths
+static std::string to_lower(const std::string& s) {
+    std::string out = s;
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return static_cast<char>(::tolower(c)); });
+    return out;
+}
+
+static std::string normalize_sep(const std::string& s) {
+    std::string out = s;
+    std::replace(out.begin(), out.end(), '\\', '/');
+    return out;
+}
+
+static std::string trim(const std::string& s) {
+    size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return "";
+    size_t e = s.find_last_not_of(" \t\r\n");
+    return s.substr(b, e - b + 1);
+}
+
+void PathTable::scan(const std::string& root) {
+    entries_.clear();
+    lowered_.clear();
+    // Simple recursive walk; the tree is ~3.7k files so this is fast enough
+    // and avoids platform-specific directory iteration.
+    std::vector<std::string> stack{root};
+    while (!stack.empty()) {
+        std::string dir = stack.back();
+        stack.pop_back();
+        // Use opendir/readdir via <dirent.h> (POSIX, and the target is Linux).
+        DIR* d = opendir(dir.c_str());
+        if (!d) continue;
+        struct dirent* e;
+        while ((e = readdir(d)) != nullptr) {
+            std::string name = e->d_name;
+            if (name == "." || name == "..") continue;
+            std::string full = dir + "/" + name;
+            struct stat st;
+            if (stat(full.c_str(), &st) != 0) continue;
+            if (S_ISDIR(st.st_mode)) {
+                stack.push_back(full);
+            } else {
+                std::string rel = full;
+                if (rel.size() > root.size() + 1)
+                    rel = rel.substr(root.size() + 1);
+                rel = normalize_sep(rel);
+                entries_.push_back(rel);
+                lowered_.push_back(to_lower(rel));
+            }
+        }
+        closedir(d);
+    }
+    // Sort so lookups are deterministic.
+    std::vector<size_t> order(entries_.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        return entries_[a] < entries_[b];
+    });
+    std::vector<std::string> e2, l2;
+    e2.reserve(order.size()); l2.reserve(order.size());
+    for (size_t i : order) { e2.push_back(entries_[i]); l2.push_back(lowered_[i]); }
+    entries_.swap(e2);
+    lowered_.swap(l2);
+}
+
+bool PathTable::exists_exact(const std::string& ref) const {
+    std::string r = normalize_sep(ref);
+    if (r.empty()) return false;
+    if (!r.empty() && r[0] == '/') r.erase(0, 1);
+    std::string lr = to_lower(r);
+    for (size_t i = 0; i < entries_.size(); ++i)
+        if (lowered_[i] == lr) return true;
+    return false;
+}
+
+std::string PathTable::resolve(const std::string& ref) const {
+    static const char* kExts[] = {".png", ".jpg", ".jpeg", ".ogg", ".effect",
+                                  ".txt", ".fontdef", ".LX3TRK"};
+    std::string r = normalize_sep(ref);
+    if (!r.empty() && r[0] == '/') r.erase(0, 1);
+
+    // Exact match first, then case-insensitive.
+    for (size_t i = 0; i < entries_.size(); ++i)
+        if (entries_[i] == r) return entries_[i];
+    std::string lr = to_lower(r);
+    for (size_t i = 0; i < entries_.size(); ++i)
+        if (lowered_[i] == lr) return entries_[i];
+
+    // Missing extension: try appending known ones.
+    for (const char* ext : kExts) {
+        std::string cand = r + ext;
+        std::string lc = to_lower(cand);
+        for (size_t i = 0; i < entries_.size(); ++i)
+            if (lowered_[i] == lc) return entries_[i];
+    }
+    return std::string();
+}
+
+std::string PathTable::resolve_under(const std::string& base,
+                                     const std::string& ref) const {
+    std::string b = normalize_sep(base);
+    if (!b.empty() && b[0] == '/') b.erase(0, 1);
+    std::string r = normalize_sep(ref);
+    if (!r.empty() && r[0] == '/') r.erase(0, 1);
+    if (b.empty()) return resolve(r);
+    // If the reference already carries the base prefix, do not double it.
+    if (r.compare(0, b.size(), b) == 0) return resolve(r);
+    return resolve(b + "/" + r);
+}
+
+std::vector<std::string> PathTable::family(const std::string& prefix) const {
+    std::vector<std::string> out;
+    std::string p = to_lower(normalize_sep(prefix));
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        if (lowered_[i].compare(0, p.size(), p) == 0) out.push_back(entries_[i]);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------- image
+Image decode_image(const uint8_t* data, size_t size) {
+    Image img;
+    if (!data || size == 0) return img;
+    int w = 0, h = 0, comp = 0;
+    // Force RGBA so the texture upload path is uniform.
+    unsigned char* px = stbi_load_from_memory(data, static_cast<int>(size),
+                                               &w, &h, &comp, 4);
+    if (!px) return img;
+    img.width = w;
+    img.height = h;
+    img.channels = 4;
+    img.rgba.assign(px, px + static_cast<size_t>(w) * h * 4);
+    stbi_image_free(px);
+    return img;
+}
+
+// ---------------------------------------------------------------- helpers
+static bool read_file(const std::string& path, std::string* out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    *out = ss.str();
+    return true;
+}
+
+static std::string strip_comment(const std::string& line) {
+    size_t p = line.find("//");
+    return p == std::string::npos ? line : line.substr(0, p);
+}
+
+// Splits a line into whitespace-separated tokens, honouring "quoted strings".
+static std::vector<std::string> tokenize(const std::string& line) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i < line.size()) {
+        while (i < line.size() && isspace(static_cast<unsigned char>(line[i]))) ++i;
+        if (i >= line.size()) break;
+        if (line[i] == '"') {
+            size_t j = line.find('"', i + 1);
+            if (j == std::string::npos) j = line.size();
+            out.push_back(line.substr(i + 1, j - i - 1));
+            i = j + 1;
+        } else {
+            size_t j = i;
+            while (j < line.size() && !isspace(static_cast<unsigned char>(line[j]))) ++j;
+            out.push_back(line.substr(i, j - i));
+            i = j;
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------- track
+const TrackSection* Track::find_section(const std::string& name) const {
+    for (const auto& s : sections)
+        if (s.name == name) return &s;
+    for (const auto& s : sections) {
+        std::string a = to_lower(s.name), b = to_lower(name);
+        if (a == b) return &s;
+    }
+    return nullptr;
+}
+
+const NamedPoint* Track::find_named(const std::string& name) const {
+    for (const auto& p : named_points)
+        if (p.name == name) return &p;
+    for (const auto& p : named_points) {
+        if (to_lower(p.name) == to_lower(name)) return &p;
+    }
+    return nullptr;
+}
+
+bool Track::point_at(const std::string& section, float s, Vec2* out) const {
+    const TrackSection* sec = find_section(section);
+    if (!sec || sec->points.empty()) return false;
+    float remain = s;
+    for (size_t i = 0; i + 1 < sec->points.size(); ++i) {
+        const Vec2& a = sec->points[i];
+        const Vec2& b = sec->points[i+1];
+        float dx = b.x - a.x, dy = b.y - a.y;
+        float seg = std::sqrt(dx*dx + dy*dy);
+        if (remain <= seg || i + 2 == sec->points.size()) {
+            float t = seg > 0.0f ? remain / seg : 0.0f;
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            out->x = a.x + dx * t;
+            out->y = a.y + dy * t;
+            return true;
+        }
+        remain -= seg;
+    }
+    out->x = sec->points.back().x;
+    out->y = sec->points.back().y;
+    return true;
+}
+
+bool Track::tangent_at(const std::string& section, float s, float* out) const {
+    const TrackSection* sec = find_section(section);
+    if (!sec || sec->points.size() < 2) return false;
+    float remain = s;
+    for (size_t i = 0; i + 1 < sec->points.size(); ++i) {
+        const Vec2& a = sec->points[i];
+        const Vec2& b = sec->points[i+1];
+        float dx = b.x - a.x, dy = b.y - a.y;
+        float seg = std::sqrt(dx*dx + dy*dy);
+        if (remain <= seg || i + 2 == sec->points.size()) {
+            *out = std::atan2(dy, dx);
+            return true;
+        }
+        remain -= seg;
+    }
+    *out = 0.0f;
+    return true;
+}
+
+// Parses path.LX3TRK. Sections and named points are stored as
+//   "name" { 0 1 2 ... }
+//   "name" ( x, y )
+bool load_track(const std::string& path, Track* out, std::string* err) {
+    std::string text;
+    if (!read_file(path, &text)) {
+        if (err) *err = "cannot read " + path;
+        return false;
+    }
+    *out = Track();
+
+    enum class Sect { None, Verts, Sections, Reflectors, NamedPoints } section = Sect::None;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        line = strip_comment(line);
+        std::string t = trim(line);
+        if (t.empty()) continue;
+
+        if (t == "Verts") { section = Sect::Verts; continue; }
+        if (t == "Sections") { section = Sect::Sections; continue; }
+        if (t == "Reflectors") { section = Sect::Reflectors; continue; }
+        if (t == "NamedPoints") { section = Sect::NamedPoints; continue; }
+        if (t == "}") { section = Sect::None; continue; }
+
+        if (section == Sect::Verts) {
+            if (t.compare(0, 5, "Vert ") == 0) {
+                std::vector<std::string> tok = tokenize(t);
+                if (tok.size() >= 3) {
+                    Vec2 v;
+                    v.x = static_cast<float>(atof(tok[1].c_str()));
+                    v.y = static_cast<float>(atof(tok[2].c_str()));
+                    out->verts.push_back(v);
+                }
+            }
+        } else if (section == Sect::Sections) {
+            // "name" { 0 1 2 ... }
+            size_t q1 = t.find('"');
+            if (q1 == std::string::npos) continue;
+            size_t q2 = t.find('"', q1 + 1);
+            if (q2 == std::string::npos) continue;
+            std::string name = t.substr(q1 + 1, q2 - q1 - 1);
+            TrackSection sec;
+            sec.name = name;
+            size_t brace = t.find('{');
+            if (brace != std::string::npos) {
+                size_t close = t.find('}', brace);
+                std::string inner = t.substr(brace + 1,
+                                             close == std::string::npos ? std::string::npos
+                                                                         : close - brace - 1);
+                std::istringstream is(inner);
+                int idx;
+                while (is >> idx) sec.vertex_indices.push_back(idx);
+            }
+            out->sections.push_back(sec);
+        } else if (section == Sect::NamedPoints) {
+            // "name" ( x, y )
+            size_t q1 = t.find('"');
+            if (q1 == std::string::npos) continue;
+            size_t q2 = t.find('"', q1 + 1);
+            if (q2 == std::string::npos) continue;
+            std::string name = t.substr(q1 + 1, q2 - q1 - 1);
+            size_t lp = t.find('(', q2);
+            if (lp == std::string::npos) continue;
+            size_t rp = t.find(')', lp);
+            std::string inner = t.substr(lp + 1,
+                                         rp == std::string::npos ? std::string::npos
+                                                                 : rp - lp - 1);
+            std::vector<std::string> tok = tokenize(inner);
+            if (tok.size() >= 2) {
+                NamedPoint np;
+                np.name = name;
+                np.pos.x = static_cast<float>(atof(tok[0].c_str()));
+                np.pos.y = static_cast<float>(atof(tok[1].c_str()));
+                out->named_points.push_back(np);
+            }
+        }
+    }
+
+    // Resolve section vertex indices into polylines.
+    for (auto& sec : out->sections) {
+        for (int idx : sec.vertex_indices) {
+            if (idx >= 0 && static_cast<size_t>(idx) < out->verts.size())
+                sec.points.push_back(out->verts[idx]);
+        }
+        float len = 0.0f;
+        for (size_t i = 0; i + 1 < sec.points.size(); ++i) {
+            float dx = sec.points[i+1].x - sec.points[i].x;
+            float dy = sec.points[i+1].y - sec.points[i].y;
+            len += std::sqrt(dx*dx + dy*dy);
+        }
+        sec.length = len;
+    }
+    if (err) err->clear();
+    return true;
+}
+
+// ---------------------------------------------------------------- animation
+bool expand_frames(const PathTable& paths, const std::string& prefix,
+                   std::vector<std::string>* out) {
+    out->clear();
+    std::vector<std::string> fam = paths.family(prefix);
+    if (fam.empty()) return false;
+    // Keep only image files, then order them naturally by their numeric suffix
+    // so animation playback order is correct.
+    std::vector<std::string> frames;
+    for (const auto& f : fam) {
+        std::string l = to_lower(f);
+        if (l.size() > 4 && l.compare(l.size()-4, 4, ".png") == 0)
+            frames.push_back(f);
+    }
+    if (frames.empty()) return false;
+
+    auto trailing_number = [](const std::string& s) -> long {
+        size_t i = s.size();
+        while (i > 0 && isdigit(static_cast<unsigned char>(s[i-1]))) --i;
+        if (i == s.size()) return -1;
+        return atol(s.c_str() + i);
+    };
+    std::stable_sort(frames.begin(), frames.end(),
+                     [&](const std::string& a, const std::string& b) {
+                         long na = trailing_number(a), nb = trailing_number(b);
+                         if (na != nb) return na < nb;
+                         return a < b;
+                     });
+    *out = frames;
+    return true;
+}
+
+// ---------------------------------------------------------------- flavors
+static const char* kFlavorNames[] = {
+    "Wild", "Black", "Blue", "Green", "Orange", "Pink", "Red", "Teal", "White", "Yellow"
+};
+
+const char* flavor_name(Flavor f) {
+    int i = static_cast<int>(f);
+    if (i < 0 || i >= static_cast<int>(Flavor::Count)) return "?";
+    return kFlavorNames[i];
+}
+
+bool flavor_from_name(const std::string& name, Flavor* out) {
+    for (int i = 0; i < static_cast<int>(Flavor::Count); ++i) {
+        if (to_lower(name) == to_lower(kFlavorNames[i])) {
+            *out = static_cast<Flavor>(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------- level
+// Resolves #include directives relative to the including file, mirroring the
+// original engine, then scans the merged text for the keys we need.
+bool load_level(const std::string& path, Level* out, std::string* err) {
+    *out = Level();
+    std::string text;
+    if (!read_file(path, &text)) {
+        if (err) *err = "cannot read " + path;
+        return false;
+    }
+
+    // Expand includes (one level deep is enough for the game's usage, but we
+    // follow chains to be safe).
+    std::string merged;
+    std::istringstream in(text);
+    std::string line;
+    std::string base = path;
+    size_t slash = base.find_last_of('/');
+    if (slash != std::string::npos) base = base.substr(0, slash);
+    while (std::getline(in, line)) {
+        size_t p = line.find("#include");
+        if (p != std::string::npos) {
+            size_t q1 = line.find('"', p);
+            size_t q2 = (q1 == std::string::npos) ? std::string::npos
+                                                   : line.find('"', q1 + 1);
+            if (q1 != std::string::npos && q2 != std::string::npos) {
+                std::string inc = line.substr(q1 + 1, q2 - q1 - 1);
+                std::string full = base + "/" + inc;
+                std::string sub;
+                if (read_file(full, &sub)) {
+                    merged += sub;
+                    merged += "\n";
+                }
+                continue;
+            }
+        }
+        merged += line;
+        merged += "\n";
+    }
+
+    // Scan the merged text.
+    std::istringstream sin(merged);
+    bool in_spawn_order = false;
+    int depth = 0;
+    int spawn_depth = -1;
+    while (std::getline(sin, line)) {
+        std::string t = trim(strip_comment(line));
+        if (t.empty()) continue;
+        if (t == "{") { ++depth; continue; }
+        if (t == "}") {
+            if (depth > 0) --depth;
+            if (in_spawn_order && depth < spawn_depth) in_spawn_order = false;
+            continue;
+        }
+
+        std::vector<std::string> tok = tokenize(t);
+        if (tok.empty()) continue;
+        const std::string& key = tok[0];
+        std::string value = tok.size() > 1 ? tok[1] : "";
+
+        if (key == "StartingTrackSectionSpawnOrder") {
+            in_spawn_order = true;
+            spawn_depth = depth + 1;
+            continue;
+        }
+        if (in_spawn_order && tok.size() == 1 && key != "{" && key != "}") {
+            out->spawn_order.push_back(key);
+            continue;
+        }
+
+        if (key == "MapPath" && !value.empty()) {
+            out->map_path = value;
+        } else if (key == "LevelDisplayName" && !value.empty()) {
+            out->display_name = value;
+        } else if (key == "LevelMusic" && !value.empty()) {
+            out->music = value;
+        } else if (key == "NumTrainsToSpawn" && !value.empty()) {
+            out->num_trains = atoi(value.c_str());
+        } else if (key == "NumSpheresToSpawnWith" && !value.empty()) {
+            out->spheres_per_train = atoi(value.c_str());
+        } else if (key == "ColorSpawnStreak" && !value.empty()) {
+            out->color_spawn_streak = static_cast<float>(atof(value.c_str()));
+        } else if (key == "AllowableGamePieceFlavors") {
+            // Nested block: each difficulty name holds a list of flavors.
+            int base_depth = depth;
+            std::string difficulty;
+            std::vector<std::string> list;
+            while (std::getline(sin, line)) {
+                std::string it = trim(strip_comment(line));
+                if (it.empty()) continue;
+                if (it == "{") { ++depth; continue; }
+                if (it == "}") {
+                    --depth;
+                    if (depth <= base_depth) break;
+                    continue;
+                }
+                std::vector<std::string> itok = tokenize(it);
+                if (itok.empty()) continue;
+                if (itok.size() == 1 && difficulty.empty()) {
+                    difficulty = itok[0];
+                } else {
+                    for (const auto& fl : itok) list.push_back(fl);
+                }
+            }
+            if (!difficulty.empty())
+                out->flavors[difficulty] = list;
+            continue;
+        }
+    }
+    if (err) err->clear();
+    return true;
+}
+
+}  // namespace luxor

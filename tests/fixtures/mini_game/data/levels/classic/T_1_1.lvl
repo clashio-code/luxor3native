@@ -1,0 +1,19 @@
+MapPath "data/maps/testmap/"
+LevelDisplayName "#test"
+LevelMusic "LevelMusicClassic"
+
+TrainConstructionData
+{
+	NumSpheresToSpawnWith	7
+	ColorSpawnStreak	0.25
+}
+
+NumTrainsToSpawn	2
+MinSecondsBeforeNextTrainCanSpawn 25.0
+
+StartingTrackSectionSpawnOrder
+{
+	main
+}
+
+#include "flavors_1.txt"

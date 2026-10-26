@@ -1,0 +1,161 @@
+name: CI
+
+# Runs entirely without the copyrighted Luxor 3 assets: the C++ core is
+# exercised against the synthetic fixture in tests/fixtures/mini_game.
+# See docs/ASSET_POLICY.md.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Core build and headless tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build python3
+
+      - name: Build core (no SDL2 required)
+        working-directory: src
+        run: |
+          cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_CXX_FLAGS="-Wall -Wextra -Werror"
+          cmake --build build --target luxor3_test luxor3_preview
+
+      - name: Run headless tests against the synthetic fixture
+        working-directory: src
+        run: ./build/luxor3_test ../tests/fixtures/mini_game
+
+      - name: Render a preview frame from the fixture
+        working-directory: src
+        run: |
+          ./build/luxor3_preview ../tests/fixtures/mini_game \
+            ../tests/fixtures/mini_game/data/levels/classic/T_1_1.lvl \
+            preview.png
+          test -s preview.png
+          python3 - <<'EOF'
+          import struct
+          with open('preview.png','rb') as f:
+              head = f.read(24)
+          assert head[:8] == b'\x89PNG\r\n\x1a\n', 'not a PNG'
+          w, h = struct.unpack('>II', head[16:24])
+          print(f'preview.png is {w}x{h}')
+          assert (w, h) == (800, 600), f'unexpected size {w}x{h}'
+          EOF
+
+      - name: Regenerate the fixture and confirm it is reproducible
+        run: |
+          python3 tools/make_fixture.py /tmp/fixture_check
+          diff -r tests/fixtures/mini_game /tmp/fixture_check
+
+      - name: Check that no copyrighted assets are tracked
+        run: |
+          if git ls-files | grep -Ei '(^|/)(luxor3\.exe|fmod\.dll)$'; then
+            echo "::error::copyrighted binaries must not be tracked"
+            exit 1
+          fi
+          if git ls-files | grep -E '^data/'; then
+            echo "::error::the game data tree must not be tracked"
+            exit 1
+          fi
+
+  python-tools:
+    name: Data analysis tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install python
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3
+
+      - name: Compile-check the tools
+        run: |
+          python3 -m py_compile \
+            tools/luxor_parse.py \
+            tools/asset_audit.py \
+            tools/asset_inventory.py \
+            tools/case_audit.py \
+            tools/pe_probe.py \
+            tools/make_fixture.py
+
+      - name: Exercise the parser on the fixture
+        run: |
+          python3 tools/luxor_parse.py track \
+            tests/fixtures/mini_game/data/maps/testmap/path.LX3TRK
+          python3 tools/luxor_parse.py level \
+            tests/fixtures/mini_game/data/levels/classic/T_1_1.lvl > /dev/null
+          python3 tools/luxor_parse.py validate tests/fixtures/mini_game
+
+  cross-build:
+    name: Cross-build ARM64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the aarch64 toolchain
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            cmake ninja-build pkg-config
+
+      - name: Install the aarch64 SDL2 and GLES2 development packages
+        run: |
+          # Ubuntu ports archive carries the arm64 build of these packages.
+          echo 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe' \
+            | sudo tee /etc/apt/sources.list.d/ports-arm64.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsdl2-dev:arm64 \
+            libgles2-mesa-dev:arm64
+
+      - name: Cross-build the SDL2 backends for ARM64
+        working-directory: src
+        run: |
+          # Point pkg-config at the arm64 pkgconfig directory so it cannot
+          # pick up an amd64 libsdl2-dev by accident.
+          export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig
+          export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
+          cmake -S . -B build-aarch64 -G Ninja \
+                -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-linux-gnu.cmake \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_CXX_FLAGS="-Wall -Wextra" \
+                -DCMAKE_PREFIX_PATH=/usr/lib/aarch64-linux-gnu
+          cmake --build build-aarch64 --target luxor3 luxor3_gl device_probe
+
+      - name: Verify the output is ARM64
+        working-directory: src
+        run: |
+          file build-aarch64/luxor3
+          file build-aarch64/luxor3_gl
+          file build-aarch64/device_probe
+          readelf -h build-aarch64/luxor3 | grep -E 'Class:|Machine:'
+          readelf -h build-aarch64/luxor3 | grep -q 'AArch64'
+          # The device provides these at runtime; the binaries must not
+          # statically embed anything.
+          readelf -d build-aarch64/luxor3 | grep -q 'libSDL2-2.0.so.0'
+
+      - name: Upload the ARM64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: luxor3-aarch64
+          path: |
+            src/build-aarch64/luxor3
+            src/build-aarch64/luxor3_gl
+            src/build-aarch64/device_probe
+          if-no-files-found: error

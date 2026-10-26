@@ -1,0 +1,30 @@
+// Synthetic track fixture for CI.
+// Mirrors the structure of a real path.LX3TRK: world Y points up.
+
+Verts
+{
+	Vert 100 0 0
+	Vert 100 -50 0
+	Vert 50 -50 0
+	Vert 50 -100 0
+	Vert 150 -100 0
+	Vert 150 -150 0
+}
+
+Sections
+{
+	"main" { 0 1 }
+	"branch" { 2 3 }
+	"junction" { 1 2 }
+	"exit" { 4 5 }
+}
+
+Reflectors
+{
+}
+
+NamedPoints
+{
+	"point_spawn01" ( 120, -25 )
+	"point_spawn02" ( 60, -75 )
+}
