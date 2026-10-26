@@ -19,3 +19,7 @@ unins000.dat
 /save/
 config/local*
 *.log
+
+# Python bytecode
+__pycache__/
+*.pyc
