@@ -102,7 +102,8 @@ jobs:
 
   cross-build:
     name: Cross-build ARM64
-    runs-on: ubuntu-latest
+    # Jammy's cross toolchain has an older glibc sysroot, closer to the target.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -113,46 +114,50 @@ jobs:
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             cmake ninja-build pkg-config
 
-      - name: Enable arm64 Ubuntu ports packages
+      - name: Build the ARM64 sysroot
         run: |
-          # The RG40XXV runs an older Linux userspace. Build against Ubuntu
-          # 22.04 (jammy) arm64 SDL2 so the binary does not require noble's
-          # newer GLIBC 2.38 symbols. Ubuntu ports is the arm64 archive.
-          sudo dpkg --add-architecture arm64
-          # ports.ubuntu.com is the ONLY archive that carries arm64 for
-          # Ubuntu. The runner's default ubuntu.sources is deb822 format and
-          # does not set Architectures, so apt also tries (and fails) to fetch
-          # arm64 indexes from archive.ubuntu.com and security.ubuntu.com.
-          # Replace it with a classic sources.list that pins [arch=amd64]
-          # explicitly, then add jammy arm64 from ports. Both archives are
-          # signed by the same Ubuntu Archive key already on the runner.
-          sudo rm -f /etc/apt/sources.list.d/ubuntu.sources
-          cat <<'EOF' | sudo tee /etc/apt/sources.list.d/ubuntu-main.list
-          deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse
-          deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
-          deb [arch=amd64] http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse
-          EOF
-          echo 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe' \
-            | sudo tee /etc/apt/sources.list.d/ports-arm64.list
-          sudo apt-get update
-          sudo apt-get install -y \
-            libsdl2-dev:arm64 \
-            libsdl2-2.0-0:arm64
+          # Ubuntu's arm64 packages live on ports.ubuntu.com. They cannot be
+          # installed with apt here: multiarch conflicts with the runner's
+          # own amd64 libc6-dev / glib2.0-dev, and Jammy arm64 packages clash
+          # with the runner's Noble "t64" variants.
+          #
+          # Instead, download the .deb files and extract them into a plain
+          # sysroot. Only the headers and the shared objects are needed; the
+          # target device provides the runtime libraries.
+          set -euo pipefail
+          SYSROOT=/opt/arm64-sysroot
+          mkdir -p "$SYSROOT" /tmp/arm64-debs
+          cd /tmp/arm64-debs
+          BASE=http://ports.ubuntu.com/ubuntu-ports
+          for url in \
+            "$BASE/pool/universe/libs/libsdl2/libsdl2-dev_2.0.20+dfsg-2build1_arm64.deb" \
+            "$BASE/pool/main/libs/libsdl2/libsdl2-2.0-0_2.0.20+dfsg-2build1_arm64.deb" \
+            "$BASE/pool/main/libg/libglvnd/libgles2_1.4.0-1_arm64.deb" \
+            "$BASE/pool/main/libg/libglvnd/libglvnd0_1.4.0-1_arm64.deb" \
+            "$BASE/pool/main/libg/libglvnd/libgl1_1.4.0-1_arm64.deb" ; do
+            curl -sSLO "$url"
+          done
+          for deb in *.deb; do dpkg-deb -x "$deb" "$SYSROOT"; done
+          # libgles2 ships only the runtime SONAME; the linker wants the
+          # development symlink.
+          ln -sf libGLESv2.so.2 "$SYSROOT/usr/lib/aarch64-linux-gnu/libGLESv2.so"
+          echo "sysroot contents:"
+          ls "$SYSROOT/usr/lib/aarch64-linux-gnu" | grep -E 'libSDL2|libGLESv2'
+          ls "$SYSROOT/usr/include/aarch64-linux-gnu/SDL2" | head -3
 
       - name: Cross-build the SDL2 backends for ARM64
         working-directory: src
         run: |
-          # Point pkg-config at the arm64 pkgconfig directory so it cannot
-          # pick up an amd64 libsdl2-dev by accident. Do not set
-          # PKG_CONFIG_SYSROOT_DIR: the .pc file already uses absolute
-          # multiarch paths, and a sysroot prefix would break them.
-          export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig
-          export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
+          SYSROOT=/opt/arm64-sysroot
           cmake -S . -B build-aarch64 -G Ninja \
                 -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-linux-gnu.cmake \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_CXX_FLAGS="-Wall -Wextra" \
-                -DCMAKE_PREFIX_PATH=/usr/lib/aarch64-linux-gnu
+                -DCMAKE_C_FLAGS="-I$SYSROOT/usr/include/aarch64-linux-gnu" \
+                -DCMAKE_CXX_FLAGS="-Wall -Wextra -I$SYSROOT/usr/include/aarch64-linux-gnu" \
+                -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined -Wl,-rpath-link,$SYSROOT/usr/lib/aarch64-linux-gnu" \
+                -DSDL2_LIBRARY="$SYSROOT/usr/lib/aarch64-linux-gnu/libSDL2.so" \
+                -DSDL2_INCLUDE_DIR="$SYSROOT/usr/include/SDL2" \
+                -DGLESV2_LIBRARY="$SYSROOT/usr/lib/aarch64-linux-gnu/libGLESv2.so"
           cmake --build build-aarch64 --target luxor3 luxor3_gl device_probe
 
       - name: Verify the output is ARM64
@@ -166,6 +171,11 @@ jobs:
           # The device provides these at runtime; the binaries must not
           # statically embed anything.
           readelf -d build-aarch64/luxor3 | grep -q 'libSDL2-2.0.so.0'
+          # The binary must not require a newer glibc than the device has.
+          if readelf -V build-aarch64/luxor3 | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1 | grep -q 'GLIBC_2.3[6-9]'; then
+            echo "::error::binary requires a glibc newer than the device provides"
+            exit 1
+          fi
 
       - name: Upload the ARM64 artifacts
         uses: actions/upload-artifact@v4
