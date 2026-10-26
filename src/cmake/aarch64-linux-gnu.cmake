@@ -28,36 +28,28 @@ set(CMAKE_AR           ${TOOLCHAIN_PREFIX}ar)
 set(CMAKE_RANLIB       ${TOOLCHAIN_PREFIX}ranlib)
 set(CMAKE_STRIP        ${TOOLCHAIN_PREFIX}strip)
 
-# Debian/Ubuntu arm64 packages land in /usr/lib/aarch64-linux-gnu, not
-# /usr/aarch64-linux-gnu. Root BOTH so find_package/find_library reach them.
-# Override with -DCMAKE_FIND_ROOT_PATH=... to point at a custom sysroot.
-if(NOT CMAKE_FIND_ROOT_PATH)
-    set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu)
-endif()
+# Ubuntu arm64 packages come from ports.ubuntu.com, while host cross tools
+# come from the runner's native archive. The packages install into these
+# multiarch directories.
+set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu)
 
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
-# Debian/Ubuntu multiarch headers (e.g. SDL2/_real_SDL_config.h) live in
-# /usr/include/aarch64-linux-gnu, which is NOT in the cross compiler's
-# default include path. GCC rewrites -I paths with the sysroot prefix, so
-# this stays correct when CMAKE_SYSROOT points at a custom sysroot.
-if(NOT CMAKE_SYSROOT)
-    set(CMAKE_SYSROOT "/")
-endif()
-set(CMAKE_C_FLAGS_INIT "-I/usr/include/aarch64-linux-gnu")
-set(CMAKE_CXX_FLAGS_INIT "-I/usr/include/aarch64-linux-gnu")
+# SDL's Debian/Ubuntu package splits the architecture-specific config header
+# into /usr/include/aarch64-linux-gnu/SDL2. Adding this directory lets the
+# default <SDL2/_real_SDL_config.h> include find that header. Do NOT add
+# /usr/include: on an amd64 runner that can select host (wrong-architecture)
+# headers before the arm64 headers.
+add_compile_options(-I/usr/include/aarch64-linux-gnu)
 
-# The Ubuntu SDL2 shared library carries DT_NEEDED entries for optional
-# X11/Wayland/audio backends. Tell the cross-linker where the multiarch
-# dependency DSOs live, without adding them to the executable's link list.
-# libpulse lives in a subdirectory that must be listed separately.
+# SDL2's shared library references optional X11/Wayland/audio backend DSOs.
+# Help the cross-linker resolve those dependencies from Ubuntu's multiarch
+# library directories without adding them to the final executable's NEEDED list.
 set(CMAKE_EXE_LINKER_FLAGS_INIT
-    "-Wl,-rpath-link,/usr/lib/aarch64-linux-gnu \
-     -Wl,-rpath-link,/usr/lib/aarch64-linux-gnu/pulseaudio \
-     -Wl,-rpath-link,/lib/aarch64-linux-gnu")
+    "-Wl,-rpath-link,/usr/lib/aarch64-linux-gnu -Wl,-rpath-link,/usr/lib/aarch64-linux-gnu/pulseaudio -Wl,-rpath-link,/lib/aarch64-linux-gnu")
 
 # Cross-compiling SDL2 built from source is possible but unnecessary: the
 # image ships SDL2 2.28.5 and linking dynamically keeps the muOS video driver

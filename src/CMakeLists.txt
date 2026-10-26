@@ -43,31 +43,36 @@ add_test(NAME core
 # configure on a machine without any SDL2 development package, because that is
 # what the headless CI job does.
 #
-# pkg-config comes first because it is sysroot-aware: PKG_CONFIG_LIBDIR can
-# point at the arm64 pkgconfig directory so a cross build picks the arm64
-# SDL2 instead of an amd64 one. The CMake config package is the fallback.
-set(LUXOR_HAVE_SDL2 FALSE)
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-    pkg_check_modules(SDL2 QUIET IMPORTED_TARGET sdl2)
-    if(SDL2_FOUND)
-        add_library(SDL2::SDL2 ALIAS PkgConfig::SDL2)
-        set(LUXOR_HAVE_SDL2 TRUE)
-    endif()
-endif()
-if(NOT LUXOR_HAVE_SDL2)
+# Search explicit Ubuntu multiarch locations first. find_package/pkg-config
+# may otherwise select host SDL2 instead of the target SDL2 during cross-builds.
+find_library(SDL2_LIBRARY NAMES SDL2 SDL2-2.0
+    PATHS /usr/lib/aarch64-linux-gnu /usr/lib /usr/local/lib
+    NO_CMAKE_FIND_ROOT_PATH)
+find_path(SDL2_INCLUDE_DIR NAMES SDL.h
+    PATHS /usr/include /usr/local/include
+    PATH_SUFFIXES SDL2
+    NO_CMAKE_FIND_ROOT_PATH)
+
+if(SDL2_LIBRARY AND SDL2_INCLUDE_DIR)
+    add_library(SDL2::SDL2 UNKNOWN IMPORTED)
+    set_target_properties(SDL2::SDL2 PROPERTIES
+        IMPORTED_LOCATION "${SDL2_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${SDL2_INCLUDE_DIR}"
+    )
+else()
+    # Allow host builds to use an installed CMake SDL2 package if the
+    # multiarch lookup above did not find one.
     find_package(SDL2 QUIET CONFIG)
-    if(SDL2_FOUND)
-        set(LUXOR_HAVE_SDL2 TRUE)
-    endif()
 endif()
 
-if(NOT LUXOR_HAVE_SDL2)
+if(NOT TARGET SDL2::SDL2)
     message(STATUS "SDL2 not found: building the headless core only")
     return()
 endif()
 
-find_library(GLESV2_LIBRARY NAMES GLESv2)
+find_library(GLESV2_LIBRARY NAMES GLESv2
+    PATHS /usr/lib/aarch64-linux-gnu /usr/lib
+    NO_CMAKE_FIND_ROOT_PATH)
 
 add_library(luxor3_sdl STATIC
     game.cpp
@@ -92,10 +97,17 @@ else()
 endif()
 
 # Runtime probe to run on the device. It calls glGetString, so it needs
-# libGLESv2 even though it does not create its own GL renderer.
+# libGLESv2 even though it does not create its own GL renderer. The GLES2
+# headers come from the vendored third_party/khronos copy, so no GLES
+# development package is required on the build host.
 add_executable(device_probe device_probe.c)
+target_include_directories(device_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/khronos
+)
 if(GLESV2_LIBRARY)
-    target_link_libraries(device_probe PRIVATE SDL2::SDL2 ${GLESV2_LIBRARY})
+    # libm is explicit because this is a C target: CMake only auto-links -lm
+    # for C++ targets, and SDL2 pulls in libm math symbols (exp, pow, ...).
+    target_link_libraries(device_probe PRIVATE SDL2::SDL2 ${GLESV2_LIBRARY} m)
 else()
-    target_link_libraries(device_probe PRIVATE SDL2::SDL2)
+    target_link_libraries(device_probe PRIVATE SDL2::SDL2 m)
 endif()

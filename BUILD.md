@@ -48,6 +48,8 @@ sudo dpkg --add-architecture arm64
 sudo apt-get install -y \
   gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake ninja-build pkg-config
 # The arm64 SDL2 development package comes from the Ubuntu ports archive.
+# Jammy (22.04) is used deliberately: its SDL2 does not require the newer
+# GLIBC 2.38 symbols that noble's SDL2 would pull in.
 echo 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe' \
   | sudo tee /etc/apt/sources.list.d/ports-arm64.list
 sudo apt-get update
