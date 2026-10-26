@@ -66,12 +66,12 @@ fi
 
 if [ -x "$GAMEDIR/luxor3_gl" ]; then
     log "--- launch luxor3_gl ---"
-    "$GAMEDIR/luxor3_gl" "$GAMEDIR/data" >> "$LOG" 2>&1
+    "$GAMEDIR/luxor3_gl" "$GAMEDIR" >> "$LOG" 2>&1
     rc=$?
     log "luxor3_gl exit=$rc"
 elif [ -x "$GAMEDIR/luxor3" ]; then
     log "--- launch luxor3 ---"
-    "$GAMEDIR/luxor3" "$GAMEDIR/data" >> "$LOG" 2>&1
+    "$GAMEDIR/luxor3" "$GAMEDIR" >> "$LOG" 2>&1
     rc=$?
     log "luxor3 exit=$rc"
 else
