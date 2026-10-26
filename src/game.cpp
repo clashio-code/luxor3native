@@ -190,7 +190,6 @@ int run_game(int argc, char** argv, Presenter* p) {
     }
     if (game_controller) SDL_GameControllerClose(game_controller);
     if (joystick) SDL_JoystickClose(joystick);
-    SDL_Quit();
     return 0;
 }
 
