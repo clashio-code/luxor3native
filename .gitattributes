@@ -1,0 +1,14 @@
+# Keep line endings LF everywhere.
+#
+# Git on Windows defaults to core.autocrlf=true, which would rewrite LF to
+# CRLF on checkout and back on commit. The CI runners are Linux and the
+# workflow files are shell/YAML, so normalize to LF in the repository
+# itself. This keeps `git diff` clean across Windows and Linux.
+* text=auto eol=lf
+
+# Binary assets must never be touched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ogg binary
+*.zip binary

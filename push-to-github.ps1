@@ -13,7 +13,10 @@
   See docs/ASSET_POLICY.md.
 #>
 
-$ErrorActionPreference = 'Stop'
+# Native commands (git) write warnings to stderr. Under 'Stop' PowerShell 5.1
+# turns those into terminating errors, so use 'Continue' and check $LASTEXITCODE
+# explicitly after every git call instead.
+$ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 function Fail([string]$msg) {
@@ -48,9 +51,17 @@ Ok (git --version)
 if (Test-Path -LiteralPath '.git') {
     Info "Repo .git sudah ada."
 } else {
-    git init -b main 2>&1 | Out-Null
+    git init -b main 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) { Fail "git init gagal." }
     Ok "Repo baru dibuat (branch: main)."
+}
+
+# Ensure the current branch is main, matching the GitHub Actions push trigger.
+$currentBranch = git branch --show-current
+if ($currentBranch -ne 'main') {
+    git branch -M main 2>&1 | Out-Host
+    if ($LASTEXITCODE -ne 0) { Fail "Gagal mengganti branch ke main." }
+    Ok ("Branch diganti dari " + $currentBranch + " ke main.")
 }
 
 # ---- 3. Commit identity (git refuses to commit without it) ----------------
@@ -68,15 +79,19 @@ if (-not (git config user.email)) {
 }
 
 # ---- 4. Stage ---------------------------------------------------------------
-git add -A 2>&1 | Out-Null
+# Git on Windows defaults to core.autocrlf=true, which makes git warn on
+# every LF file (and PowerShell 5.1 treats redirected stderr as a fatal
+# error under $ErrorActionPreference='Stop'). The CI runners are Linux and
+# need LF for shell scripts and YAML, so force autocrlf off for this repo
+# and do not redirect git's stderr into PowerShell's error stream.
+git config core.autocrlf false 2>$null
+git add -A 2>&1 | Out-Host
 if ($LASTEXITCODE -ne 0) { Fail "git add gagal." }
 
 $staged = @(git diff --cached --name-only)
 if ($staged.Count -eq 0) {
-    Warn "Tidak ada perubahan untuk di-commit."
-    Read-Host "Tekan Enter untuk keluar"
-    exit 0
-}
+    Warn "Tidak ada perubahan baru untuk di-commit. Akan push commit yang sudah ada."
+} else {
 
 # ---- 5. GUARD: copyrighted assets must never be committed -------------------
 # Note: the data/ pattern is anchored to the repo root. The synthetic fixture
@@ -99,9 +114,17 @@ Ok ("Guard aset: bersih (" + $staged.Count + " file).")
 
 # ---- 6. Commit ---------------------------------------------------------------
 $msg = "Set up Luxor 3 native port CI"
-git commit -m $msg 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { Fail "git commit gagal." }
-Ok ("Commit dibuat: " + $msg)
+git commit -m $msg 2>&1 | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    # A failed commit can mean there was nothing new to commit.
+    $head = git rev-parse --verify HEAD 2>$null
+    if (-not $head) { Fail "git commit gagal (belum ada commit)." }
+    Warn "Tidak ada commit baru (perubahan mungkin sudah ter-commit)."
+} else {
+    Ok ("Commit dibuat: " + $msg)
+}
+
+} # End of the staged-files block.
 
 # ---- 7. Remote ---------------------------------------------------------------
 $url = git remote get-url origin 2>$null
@@ -119,21 +142,29 @@ if (-not $url) {
 }
 
 # ---- 8. Push -----------------------------------------------------------------
+$branch = git branch --show-current
+if (-not $branch) { Fail "Tidak bisa menentukan nama branch lokal." }
+Info ("Branch lokal: " + $branch)
+
 Write-Host ""
 Write-Host "Push ke GitHub..." -ForegroundColor Cyan
-git push -u origin main
+git push -u origin $branch
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
-    Warn "Push belum berhasil. Kalau diminta login:"
-    Write-Host "  - Git akan membuka browser -> izinkan -> kembali ke sini."
-    Write-Host "  - Atau jalankan ulang script ini."
+    Warn "Push belum berhasil."
+    Write-Host ""
+    Write-Host "Kemungkinan penyebab:" -ForegroundColor Yellow
+    Write-Host "  1. Belum login -> Git akan membuka browser, izinkan, lalu ulangi."
+    Write-Host "  2. Repo GitHub belum dibuat / URL remote salah."
+    Write-Host "  3. Branch lokal belum punya commit."
+    Write-Host ""
     Read-Host "Tekan Enter untuk keluar"
     exit 1
 }
 
 # ---- 9. Done -----------------------------------------------------------------
 Write-Host ""
-Ok "Push berhasil ke branch main."
+Ok ("Push berhasil ke branch " + $branch + ".")
 Write-Host ""
 Write-Host "Langkah berikutnya:" -ForegroundColor Cyan
 Write-Host ("  1. Buka: " + $url)
