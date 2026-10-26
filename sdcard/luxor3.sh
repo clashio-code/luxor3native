@@ -13,13 +13,20 @@
 
 # muOS mounts the SD card at /mnt/SD2, but different images use different
 # mount points. Try the known ones instead of hard-coding a single path.
+# The port folder name is checked in both cases because the SD card is
+# case-sensitive while the staging drive on a PC is not.
 PORT_DIR=""
 for candidate in \
     "/mnt/SD2/ports/luxor3" \
+    "/mnt/SD2/ports/Luxor3" \
     "/SD2/ports/luxor3" \
+    "/SD2/ports/Luxor3" \
     "/mnt/sdcard/ports/luxor3" \
+    "/mnt/sdcard/ports/Luxor3" \
     "/sdcard/ports/luxor3" \
-    "/storage/ports/luxor3" ; do
+    "/sdcard/ports/Luxor3" \
+    "/storage/ports/luxor3" \
+    "/storage/ports/Luxor3" ; do
     if [ -x "$candidate/luxor3_gl" ] || [ -x "$candidate/luxor3" ]; then
         PORT_DIR="$candidate"
         break
