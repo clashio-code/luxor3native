@@ -171,6 +171,24 @@ struct Animation {
     float weight = 1.0f;
 };
 
+// The animation registry read from data/AnimDefs.txt. The original file holds
+// anonymous `Sequence { ... }` blocks; several blocks may share a name, in
+// which case the engine picks one at random, weighted by `weight`.
+struct AnimationRegistry {
+    // Every sequence in file order, duplicates included.
+    std::vector<Animation> sequences;
+    // Sequence indices grouped by name, in file order.
+    std::map<std::string, std::vector<size_t>> by_name;
+
+    // The first sequence registered under `name`, or nullptr.
+    const Animation* find(const std::string& name) const;
+};
+
+// Parses AnimDefs.txt. `paths` resolves each `fileName` prefix into the
+// concrete frame files it names. Returns false when the file cannot be read.
+bool load_anim_defs(const std::string& path, const PathTable& paths,
+                    AnimationRegistry* out, std::string* err);
+
 // Expands one "fileName" prefix into its frame files. The original stores
 // frames as <prefix>NNNN.png; the numbering width and separator vary
 // (ball0000.png vs ball_0000.png), so the family is matched by prefix.

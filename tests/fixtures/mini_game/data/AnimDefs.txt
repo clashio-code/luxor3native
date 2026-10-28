@@ -1,0 +1,19 @@
+// Synthetic animation registry for parser CI, mirroring the schema
+// comment in the real data/AnimDefs.txt: anonymous Sequence blocks with a
+// name, one or more fileName prefixes spliced in order, a playbackRate in
+// frames per second, isLooping, and an optional weight.
+Sequence
+{
+	name		"Ball_Red"
+	fileName	"data/gfx/balls/red/ball"
+	playbackRate	32
+	isLooping	1
+}
+
+Sequence
+{
+	name		"Ball_Blue"
+	fileName	"data/gfx/balls/blue/ball_"
+	playbackRate	32
+	isLooping	1
+}

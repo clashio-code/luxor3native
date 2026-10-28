@@ -1,9 +1,11 @@
 // Offline preview: builds a small scene from a real level and writes a PNG.
 //
-//   ./luxor3_preview <game-root> <level.lvl> <out.png> [distance]
+//   ./luxor3_preview <game-root> <level.lvl> <out.png> [distance] [time]
 //
 // This exercises the whole non-GL pipeline: PathTable, level parsing, track
-// loading, frame animation resolution, texture decode and rasterization.
+// loading, AnimDefs frame animation, texture decode and rasterization.
+// `time` selects the animation frame (seconds); the default 0.0 draws each
+// sprite's first frame.
 #include "luxor.h"
 #include "preview.h"
 #include "scene.h"
@@ -16,7 +18,7 @@ using namespace luxor;
 
 int main(int argc, char** argv) {
     if (argc < 4) {
-        fprintf(stderr, "usage: %s <game-root> <level.lvl> <out.png> [distance]\n",
+        fprintf(stderr, "usage: %s <game-root> <level.lvl> <out.png> [distance] [time]\n",
                 argv[0]);
         return 2;
     }
@@ -24,6 +26,7 @@ int main(int argc, char** argv) {
     std::string level_path = argv[2];
     std::string out_path = argv[3];
     float forced_distance = (argc > 4) ? static_cast<float>(atof(argv[4])) : -1.0f;
+    float time_seconds = (argc > 5) ? static_cast<float>(atof(argv[5])) : 0.0f;
 
     PathTable paths;
     paths.scan(root);
@@ -66,6 +69,19 @@ int main(int argc, char** argv) {
     ctx.track = &track;
     ctx.level = &level;
     ctx.ball_size = 32.0f;
+
+    // AnimDefs.txt, when present, drives which frame each sprite shows.
+    AnimationRegistry anims;
+    if (!paths.resolve("data/AnimDefs.txt").empty()) {
+        std::string anim_err;
+        if (load_anim_defs(root + "/data/AnimDefs.txt", paths, &anims, &anim_err)) {
+            ctx.anims = &anims;
+            log_line("preview", "anim defs: %zu sequences",
+                     anims.sequences.size());
+        } else {
+            log_line("preview", "anim defs failed to load: %s", anim_err.c_str());
+        }
+    }
     // Preferred texture per flavor, taken from the real game data. The
     // synthetic CI fixture only ships one ball, so fall back to it.
     const char* flavor_files[] = {
@@ -122,7 +138,7 @@ int main(int argc, char** argv) {
 
     std::vector<Train> trains{train};
     Scene scene;
-    build_scene(ctx, trains, 0.0f, &scene);
+    build_scene(ctx, trains, time_seconds, &scene);
     log_line("preview", "scene: %zu sprites, background=%s",
              scene.items.size(), scene.background.empty() ? "(none)" : scene.background.c_str());
 

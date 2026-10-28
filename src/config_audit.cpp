@@ -65,5 +65,30 @@ int main(int argc, char** argv) {
         if (it != cfg.values.end()) printf(" TrainAcceleration=%s", it->second.c_str());
         printf("\n");
     }
+
+    // AnimDefs.txt: the animation registry behind every animated sprite.
+    const std::string anims_path = root + "/data/AnimDefs.txt";
+    FILE* file = fopen(anims_path.c_str(), "rb");
+    if (file) {
+        fclose(file);
+        PathTable anim_paths;
+        anim_paths.scan(root);
+        AnimationRegistry anims;
+        std::string anim_err;
+        if (load_anim_defs(anims_path, anim_paths, &anims, &anim_err)) {
+            size_t frames_total = 0;
+            for (const auto& anim : anims.sequences) frames_total += anim.frames.size();
+            const Animation* ball_red = anims.find("Ball_Red");
+            printf("AnimDefs.txt: sequences=%zu frames=%zu",
+                   anims.sequences.size(), frames_total);
+            if (ball_red)
+                printf(" Ball_Red=%zu@%.0ffps", ball_red->frames.size(),
+                       ball_red->playback_rate);
+            printf("\n");
+        } else {
+            printf("FAIL AnimDefs.txt: %s\n", anim_err.c_str());
+            failed += 1;
+        }
+    }
     return failed == 0 ? 0 : 1;
 }

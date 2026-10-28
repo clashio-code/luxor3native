@@ -50,6 +50,16 @@ def ball_pixel(x, y):
     return (0, 0, 0, 0)
 
 
+def ball_pixel_blue(x, y):
+    cx = cy = 15.5
+    d = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+    if d <= 12.0:
+        return (30, 30, 220, 255)
+    if d <= 14.0:
+        return (255, 255, 255, 255)
+    return (0, 0, 0, 0)
+
+
 def solid_pixel(r, g, b, a):
     return lambda x, y: (r, g, b, a)
 
@@ -118,6 +128,27 @@ StartingTrackSectionSpawnOrder
 #include "flavors_1.txt"
 """
 
+ANIM_DEFS = """// Synthetic animation registry for parser CI, mirroring the schema
+// comment in the real data/AnimDefs.txt: anonymous Sequence blocks with a
+// name, one or more fileName prefixes spliced in order, a playbackRate in
+// frames per second, isLooping, and an optional weight.
+Sequence
+{
+\tname\t\t"Ball_Red"
+\tfileName\t"data/gfx/balls/red/ball"
+\tplaybackRate\t32
+\tisLooping\t1
+}
+
+Sequence
+{
+\tname\t\t"Ball_Blue"
+\tfileName\t"data/gfx/balls/blue/ball_"
+\tplaybackRate\t32
+\tisLooping\t1
+}
+"""
+
 MAP_INFO = """// Synthetic map fixture.
 MapName "#testmap"
 """
@@ -178,6 +209,14 @@ def main(out_dir):
     write(os.path.join(root, 'data/difficulty_extra.txt'), DIFFICULTY_EXTRA)
     write(os.path.join(root, 'data/gfx/balls/red/ball0000.png'),
           png_rgba(32, 32, ball_pixel), binary=True)
+    write(os.path.join(root, 'data/gfx/balls/red/ball0001.png'),
+          png_rgba(32, 32, ball_pixel), binary=True)
+    # The blue family uses the underscore variant the original data also has.
+    write(os.path.join(root, 'data/gfx/balls/blue/ball_0000.png'),
+          png_rgba(32, 32, ball_pixel_blue), binary=True)
+    write(os.path.join(root, 'data/gfx/balls/blue/ball_0001.png'),
+          png_rgba(32, 32, ball_pixel_blue), binary=True)
+    write(os.path.join(root, 'data/AnimDefs.txt'), ANIM_DEFS)
     write(os.path.join(root, 'data/maps/testmap/back_01.png'),
           png_rgba(8, 8, solid_pixel(20, 40, 120, 255)), binary=True)
 

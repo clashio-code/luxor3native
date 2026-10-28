@@ -52,6 +52,25 @@ int run_game(int argc, char** argv, Presenter* p) {
     ctx.track = &track;
     ctx.level = &level;
     ctx.ball_size = 32.0f;
+
+    // AnimDefs.txt drives every animated sprite, balls included: each flavor
+    // maps to a "Ball_<Flavor>" sequence of 30 frames played at 32 fps
+    // (GamePieceFlavors.txt BallRollAnim -> AnimDefs name). Loading it here
+    // makes all three backends animate the same way, since they draw what
+    // build_scene produced.
+    AnimationRegistry anims;
+    const std::string anim_defs_path = root + "/data/AnimDefs.txt";
+    if (load_anim_defs(anim_defs_path, paths, &anims, &err)) {
+        size_t frames_total = 0;
+        for (const auto& anim : anims.sequences) frames_total += anim.frames.size();
+        log_line("game", "anims: %zu sequences, %zu frames",
+                 anims.sequences.size(), frames_total);
+        ctx.anims = &anims;
+    } else {
+        log_line("game", "anim defs unavailable, using static ball textures (%s)",
+                 err.c_str());
+    }
+
     ShooterState shooter;
     std::string section = track.sections.empty() ? "" : track.sections[0].name;
     for (const auto& s : level.spawn_order) {
@@ -100,17 +119,35 @@ int run_game(int argc, char** argv, Presenter* p) {
     for (int i = 0; i < static_cast<int>(Flavor::Count); ++i)
         ctx.ball_texture[i] = paths.resolve(flavor_files[i]);
 
-    Train train;
-    train.section = section;
-    train.speed = 400.0f;
-    for (int i = 0; i < 10; ++i) {
-        GamePiece b;
-        b.flavor = static_cast<Flavor>(i % static_cast<int>(Flavor::Count));
-        b.radius = 16.0f;
-        train.balls.push_back(b);
-    }
-    std::vector<Train> trains{train};
     TrainTuning tuning;
+
+    // Per-section speed data: pathGamePlayData.txt carries the StartSpeed and
+    // EndSpeed the original engine uses for each section; the GameVariables
+    // values are only the fallback for sections that name neither. The
+    // difficulty's TrainSpeedMultiplier scales everything.
+    SectionSpeeds speeds;
+    if (!paths.resolve(level.map_path + "pathGamePlayData.txt").empty()) {
+        PathGameplayData gameplay;
+        if (load_path_gameplay_data(root + "/" +
+                                    paths.resolve(level.map_path +
+                                                  "pathGamePlayData.txt"),
+                                    &gameplay, &err)) {
+            NameValueConfig variables;
+            const std::string var_file = paths.resolve("data/GameVariables.txt");
+            if (!var_file.empty() && load_name_value_config(root + "/" + var_file,
+                                                            &variables, &err)) {
+                if (build_section_speeds(gameplay, variables, &speeds, &err))
+                    log_line("game", "speeds: %zu start, %zu end, multiplier %.2f",
+                             speeds.start_speed.size(), speeds.end_speed.size(),
+                             speeds.speed_multiplier);
+            } else {
+                log_line("game", "GameVariables.txt unreadable: %s", err.c_str());
+            }
+        } else {
+            log_line("game", "pathGamePlayData parse failed: %s", err.c_str());
+        }
+    }
+
     // The train walks the whole track through the section junctions, so it
     // never freezes at the end of the section it spawned on.
     TrainRoute route;
@@ -118,6 +155,21 @@ int run_game(int argc, char** argv, Presenter* p) {
         log_line("game", "no route from section '%s'", section.c_str());
         return 1;
     }
+    log_line("game", "route: %zu sections from '%s'", route.sections.size(),
+             route.sections[0].c_str());
+
+    Train train;
+    train.section = section;
+    // The train starts at the speed the map authors for the section it
+    // appears in, not at a hand-picked constant.
+    train.speed = route_section_speed(route, 0, speeds, 0.0f);
+    for (int i = 0; i < 10; ++i) {
+        GamePiece b;
+        b.flavor = static_cast<Flavor>(i % static_cast<int>(Flavor::Count));
+        b.radius = 16.0f;
+        train.balls.push_back(b);
+    }
+    std::vector<Train> trains{train};
     log_line("game", "route: %zu sections from '%s'", route.sections.size(),
              route.sections[0].c_str());
 
@@ -259,7 +311,7 @@ int run_game(int argc, char** argv, Presenter* p) {
             }
         }
 
-        advance_train_route(&trains[0], track, tuning, &route, dt, 1);
+        advance_train_route(&trains[0], track, tuning, speeds, &route, dt, 1);
         if (game_controller) {
             Sint16 ax = SDL_GameControllerGetAxis(game_controller, SDL_CONTROLLER_AXIS_RIGHTX);
             Sint16 ay = SDL_GameControllerGetAxis(game_controller, SDL_CONTROLLER_AXIS_RIGHTY);

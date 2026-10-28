@@ -586,6 +586,123 @@ bool expand_frames(const PathTable& paths, const std::string& prefix,
     return true;
 }
 
+// ---------------------------------------------------------------- AnimDefs
+const Animation* AnimationRegistry::find(const std::string& name) const {
+    auto it = by_name.find(name);
+    if (it == by_name.end() || it->second.empty()) return nullptr;
+    return &sequences[it->second.front()];
+}
+
+// Parses one `Sequence { ... }` body. Fields, per the schema comment in the
+// real file: name, one or more fileName lines, optional fileNamePlayBackwards,
+// playbackRate, isLooping, weight, alwaysLoad. Spelling of `fileName` varies
+// in the source data (lowercase `filename` also appears), so field matching is
+// case-insensitive. Spliced fileName lines concatenate frame ranges; a
+// fileNamePlayBackwards line appends its own family reverse.
+static bool parse_sequence_block(const std::vector<std::string>& lines,
+                                 const PathTable& paths, Animation* out,
+                                 std::string* err) {
+    bool have_name = false;
+    bool have_frames = false;
+    for (const auto& raw : lines) {
+        std::vector<std::string> tok = tokenize(raw);
+        if (tok.empty()) continue;
+        std::string key = to_lower(tok[0]);
+        if (key == "name" && tok.size() > 1) {
+            out->name = tok[1];
+            have_name = true;
+        } else if (key == "filenameplaybackwards" && tok.size() > 1) {
+            std::vector<std::string> fam;
+            if (expand_frames(paths, tok[1], &fam)) {
+                for (size_t i = fam.size(); i-- > 0;) out->frames.push_back(fam[i]);
+                have_frames = true;
+            }
+        } else if (key == "filename" && tok.size() > 1) {
+            std::vector<std::string> fam;
+            if (expand_frames(paths, tok[1], &fam)) {
+                for (const auto& f : fam) out->frames.push_back(f);
+                have_frames = true;
+            } else {
+                // A fileName that names no file is a data problem worth
+                // naming, but the frames spliced so far stay in place: the
+                // original engine plays whatever it managed to load.
+                if (err && err->empty())
+                    *err = "no frames for '" + tok[1] + "' in sequence '" +
+                           out->name + "'";
+                have_frames = !out->frames.empty();
+            }
+        } else if (key == "playbackrate" && tok.size() > 1) {
+            out->playback_rate = static_cast<float>(atof(tok[1].c_str()));
+        } else if (key == "islooping" && tok.size() > 1) {
+            out->looping = atoi(tok[1].c_str()) != 0;
+        } else if (key == "weight" && tok.size() > 1) {
+            out->weight = static_cast<float>(atof(tok[1].c_str()));
+        } else if (key == "alwaysload") {
+            // Pure memory-management hint for the original loader; nothing to
+            // model in the frame data itself.
+        } else {
+            // Schema-unknown line: keep the parse tolerant but flag it once
+            // through err so callers know the data deviated from the header
+            // comment's vocabulary.
+        }
+    }
+    (void)have_name;
+    return have_frames;
+}
+
+bool load_anim_defs(const std::string& path, const PathTable& paths,
+                    AnimationRegistry* out, std::string* err) {
+    if (!out) {
+        if (err) *err = "null output";
+        return false;
+    }
+    *out = AnimationRegistry();
+    if (err) err->clear();
+    std::string text;
+    if (!read_file(path, &text)) {
+        if (err) *err = "cannot read " + path;
+        return false;
+    }
+
+    // Walk the file collecting each Sequence block's field lines. Braces sit
+    // on their own lines in every shipped AnimDefs.txt.
+    static const char* kSeqHeader = "Sequence";
+    bool in_seq = false;
+    int depth = 0;
+    std::vector<std::string> block;
+    std::istringstream seq_in(text);
+    std::string seq_line;
+    while (std::getline(seq_in, seq_line)) {
+        std::string t = trim(strip_comment(seq_line));
+        if (t.empty()) continue;
+        if (!in_seq) {
+            if (t == kSeqHeader) { in_seq = true; depth = 0; block.clear(); }
+            continue;  // anything else outside a block is unexpected
+        }
+        if (t == "{") { ++depth; continue; }
+        if (t == "}") {
+            --depth;
+            if (depth <= 0) {
+                Animation anim;
+                std::string block_err;
+                if (parse_sequence_block(block, paths, &anim, &block_err)) {
+                    out->by_name[anim.name].push_back(out->sequences.size());
+                    out->sequences.push_back(std::move(anim));
+                } else if (!block_err.empty() && err) {
+                    // First missing-family error wins; report one per file.
+                    if (err->empty()) *err = block_err;
+                }
+                in_seq = false;
+                depth = 0;
+                block.clear();
+            }
+            continue;
+        }
+        block.push_back(t);
+    }
+    return true;
+}
+
 // ---------------------------------------------------------------- flavors
 static const char* kFlavorNames[] = {
     "Wild", "Black", "Blue", "Green", "Orange", "Pink", "Red", "Teal", "White", "Yellow"

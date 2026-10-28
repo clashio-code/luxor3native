@@ -9,6 +9,23 @@
 
 namespace luxor {
 
+// Frame an animation shows at `time_seconds`. AnimDefs.txt documents
+// `playbackRate` as frames per second and `isLooping` as 0/1; a non-looping
+// sequence holds its final frame once playback reaches the end.
+size_t animation_frame_index(const Animation& anim, float time_seconds) {
+    const size_t count = anim.frames.size();
+    if (count == 0) return 0;
+    const float rate = anim.playback_rate > 0.0f ? anim.playback_rate : 24.0f;
+    const float seconds = time_seconds > 0.0f ? time_seconds : 0.0f;
+    size_t index = static_cast<size_t>(seconds * rate);
+    if (anim.looping) {
+        index %= count;
+    } else if (index >= count) {
+        index = count - 1;
+    }
+    return index;
+}
+
 // PROTOTYPE ONLY: the input normalization and aim limits below have not been
 // confirmed against Luxor 3 behavior. See docs/GAMEPLAY_RULES.md.
 void set_aim(ShooterState* shooter, float x, float y) {
@@ -187,6 +204,117 @@ bool route_point(const Track& track, const TrainRoute& route, float s, Vec2* out
 
 }  // namespace
 
+// ---------------------------------------------------------------- speeds
+void SectionSpeeds::for_section(const std::string& section, float* start,
+                                float* end) const {
+    auto sit = start_speed.find(section);
+    float s = (sit != start_speed.end()) ? sit->second : start_default;
+    auto eit = end_speed.find(section);
+    float e = (eit != end_speed.end()) ? eit->second : end_default;
+    if (start) *start = s * speed_multiplier;
+    if (end) *end = e * speed_multiplier;
+}
+
+bool build_section_speeds(const PathGameplayData& gameplay,
+                          const NameValueConfig& variables,
+                          SectionSpeeds* out, std::string* err) {
+    if (!out) {
+        if (err) *err = "null output";
+        return false;
+    }
+    *out = SectionSpeeds();
+    out->start_speed = gameplay.start_speed;
+    out->end_speed = gameplay.end_speed;
+    auto value = [&](const char* key, float fallback) {
+        auto it = variables.values.find(key);
+        return it == variables.values.end() ? fallback
+                                            : static_cast<float>(atof(it->second.c_str()));
+    };
+    out->start_default =
+        value("DefaultTrackStartSpeed", out->start_default);
+    out->end_default = value("DefaultTrackEndSpeed", out->end_default);
+    out->speed_multiplier = value("MediumTrainSpeedMultiplier",
+                                  out->speed_multiplier);
+    if (err) err->clear();
+    return true;
+}
+
+// Speed the train travels at while crossing `route` section `index` at
+// `progress` (0..1) along that section.
+//
+// Verified data basis: pathGamePlayData.txt gives each section a StartSpeed
+// and an EndSpeed (26 of 27 maps carry them; 92 EndSpeed and 66 StartSpeed
+// directives in total, values between 0 and 130). The train eases between the
+// two while crossing the section.
+//
+// INFERRED, and measured against recorded gameplay: a section that names no
+// speed inherits the speed of the section before it, so the train keeps
+// running at the pace the map authored instead of jumping to a fallback.
+//
+// Measurement: tools/analysis/measure_train_speed.py, on the recorded geb
+// level, puts the train at a median 87 logical px/s across initial, main01
+// and main01a (the recording's scale, 0.609 of the logical frame, is measured
+// from the spacing of adjacent balls, whose centres are one ball diameter
+// apart). geb authors main01 at 70 px/s. The DefaultTrackStartSpeed value of
+// 800 is an order of magnitude away from anything observed, so it is not used
+// as a running speed; it only applies to a map that authors no speeds at all.
+float route_section_speed(const TrainRoute& route, size_t index,
+                          const SectionSpeeds& speeds, float progress) {
+    if (route.sections.empty() || index >= route.sections.size()) return 0.0f;
+    progress = std::max(0.0f, std::min(1.0f, progress));
+
+    // A section that names a StartSpeed and an EndSpeed eases between them
+    // while the train crosses it.
+    auto sit = speeds.start_speed.find(route.sections[index]);
+    if (sit != speeds.start_speed.end()) {
+        float start = sit->second;
+        float end = start;
+        auto eit = speeds.end_speed.find(route.sections[index]);
+        if (eit != speeds.end_speed.end()) end = eit->second;
+        return (start + (end - start) * progress) * speeds.speed_multiplier;
+    }
+
+    // The section names no speed. The train keeps the pace of the section
+    // before it, so walk backwards until a section that names one is found
+    // and take the speed the train has there: its EndSpeed when it has one
+    // (the speed it leaves that section at), otherwise its StartSpeed.
+    for (size_t back = index; back-- > 0;) {
+        const std::string& name = route.sections[back];
+        auto be = speeds.end_speed.find(name);
+        if (be != speeds.end_speed.end()) return be->second * speeds.speed_multiplier;
+        auto bs = speeds.start_speed.find(name);
+        if (bs != speeds.start_speed.end()) return bs->second * speeds.speed_multiplier;
+    }
+
+    // Nothing earlier on the route names a speed either. The route may still
+    // author speeds further ahead, so the train starts at the pace of the
+    // first section that names one. That keeps the map's intended speed
+    // instead of jumping to the 800 px/s DefaultTrackStartSpeed, which is an
+    // order of magnitude faster than anything measured in recorded gameplay.
+    for (size_t i = 0; i < route.sections.size(); ++i) {
+        auto it = speeds.start_speed.find(route.sections[i]);
+        if (it == speeds.start_speed.end()) continue;
+        float start = it->second, end = start;
+        auto eit = speeds.end_speed.find(route.sections[i]);
+        if (eit != speeds.end_speed.end()) end = eit->second;
+        return (start + (end - start) * progress) * speeds.speed_multiplier;
+    }
+
+    // No section on the route names a speed. Fall back to the pace the map
+    // uses elsewhere, and only to DefaultTrackStartSpeed when the map
+    // authors no speeds at all.
+    if (!speeds.start_speed.empty()) {
+        std::vector<float> values;
+        for (const auto& kv : speeds.start_speed) values.push_back(kv.second);
+        for (const auto& kv : speeds.end_speed) values.push_back(kv.second);
+        std::sort(values.begin(), values.end());
+        return values[values.size() / 2] * speeds.speed_multiplier;
+    }
+    float s = 0.0f, e = 0.0f;
+    speeds.for_section(route.sections[index], &s, &e);
+    return s;
+}
+
 void advance_train(Train* train, const Track& track, const TrainTuning& tuning,
                    float dt, int trains_alive) {
     if (!train || dt <= 0.0f) return;
@@ -237,8 +365,17 @@ void advance_train(Train* train, const Track& track, const TrainTuning& tuning,
 // Advances a train that walks a multi-section route. The train keeps moving
 // across section boundaries instead of stopping at the end of its first
 // section, which is what the original does.
+//
+// Speed comes from the per-section StartSpeed/EndSpeed values in the map's
+// pathGamePlayData.txt via SectionSpeeds: the train eases from a section's
+// start speed to its end speed as it crosses it. A section without directives
+// inherits the previous section's speed, and approaching the end of the whole
+// route still decelerates toward DefaultTrackEndSpeed so the train arrives
+// slowly at the pyramid. `tuning` continues to supply the acceleration used
+// when the train's speed has to change.
 void advance_train_route(Train* train, const Track& track,
-                         const TrainTuning& tuning, TrainRoute* route, float dt,
+                         const TrainTuning& tuning, const SectionSpeeds& speeds,
+                         TrainRoute* route, float dt,
                          int trains_alive) {
     if (!train || !route || dt <= 0.0f) return;
     if (route->sections.empty()) return;
@@ -255,19 +392,31 @@ void advance_train_route(Train* train, const Track& track,
     if (!current || current->length <= 0.0f) return;
     const float local = train->distance;
 
-    // The train slows down over the last stretch of the *route*, not just the
-    // last stretch of the current section, so it arrives at a junction slowly.
+    // Target speed: interpolate this section's StartSpeed/EndSpeed by how far
+    // into the section the train is, then cap the final stretch of the entire
+    // route so the train eases toward its destination.
+    const float progress = std::max(0.0f, std::min(1.0f, local / current->length));
+    float target = route_section_speed(*route, route->index, speeds, progress);
+    const float travelled = head + local;
     float total_length = 0.0f;
     for (const auto& name : route->sections) {
         const TrackSection* sec = track.find_section(name);
         if (sec) total_length += sec->length;
     }
-    const float travelled = head + local;
     const float route_remaining = std::max(0.0f, total_length - travelled);
-    float target = tuning.start_speed;
     if (route_remaining < 200.0f) {
-        target = std::max(tuning.end_speed,
-                          tuning.start_speed * (route_remaining / 200.0f));
+        // Ease toward the floor speed over the last stretch of the route so
+        // the train arrives slowly at the pyramid. The floor is the configured
+        // EndSpeed of the final section when it has one, otherwise the
+        // DefaultTrackEndSpeed. The ceiling it scales from is the speed the
+        // train actually has there, never the 800 px/s start fallback.
+        float floor_speed = 0.0f, unused = 0.0f;
+        speeds.for_section("", &unused, &floor_speed);
+        auto it = speeds.end_speed.find(route->sections.back());
+        if (it != speeds.end_speed.end()) floor_speed = it->second;
+        float ceiling = target;
+        const float ramp = std::max(0.0f, route_remaining / 200.0f);
+        target = std::min(target, std::max(floor_speed, ceiling * ramp));
     }
     float accel = (trains_alive > 2) ? tuning.high_acceleration : tuning.acceleration;
     if (train->speed < target)
@@ -354,14 +503,28 @@ void build_scene(const SceneContext& ctx, const std::vector<Train>& trains,
     // Balls. Position is stored in world space; convert to screen space here,
     // the single place where the two spaces meet. Mirroring Y also mirrors the
     // tangent angle, so its sign must be flipped to keep sprites upright.
+    //
+    // Textures come from the AnimDefs.txt sequence named "Ball_<Flavor>" when
+    // the registry has one; otherwise the fixed per-flavor texture is used.
+    // Evidence: GamePieceFlavors.txt maps each flavor to a BallRollAnim name
+    // ("Ball_Red", "Ball_Set2_Red", ...), and AnimDefs registers those names
+    // as 30-frame sequences at playbackRate 32, looping.
     for (const auto& train : trains) {
         for (const auto& ball : train.balls) {
             int fi = static_cast<int>(ball.flavor);
             if (fi < 0 || fi >= static_cast<int>(Flavor::Count)) continue;
-            const std::string& tex = ctx.ball_texture[fi];
-            if (tex.empty()) continue;
             DrawItem it;
-            it.texture = tex;
+            std::string texture;
+            if (ctx.anims) {
+                std::string anim_name = std::string("Ball_") + flavor_name(ball.flavor);
+                if (const Animation* anim = ctx.anims->find(anim_name)) {
+                    size_t i = animation_frame_index(*anim, time_seconds);
+                    texture = anim->frames[i];
+                }
+            }
+            if (texture.empty()) texture = ctx.ball_texture[fi];
+            if (texture.empty()) continue;
+            it.texture = texture;
             it.w = it.h = ctx.ball_size;
             float sy = ball.pos.y * kWorldToScreenY;
             it.x = ball.pos.x - it.w * 0.5f;
@@ -375,9 +538,17 @@ void build_scene(const SceneContext& ctx, const std::vector<Train>& trains,
                              std::vector<DrawItem>* target) {
             int fi = static_cast<int>(flavor);
             if (fi < 0 || fi >= static_cast<int>(Flavor::Count)) return;
-            if (ctx.ball_texture[fi].empty()) return;
+            std::string texture;
+            if (ctx.anims) {
+                if (const Animation* anim =
+                        ctx.anims->find(std::string("Ball_") + flavor_name(flavor))) {
+                    texture = anim->frames[animation_frame_index(*anim, time_seconds)];
+                }
+            }
+            if (texture.empty()) texture = ctx.ball_texture[fi];
+            if (texture.empty()) return;
             DrawItem item;
-            item.texture = ctx.ball_texture[fi];
+            item.texture = texture;
             item.w = item.h = size;
             item.x = pos.x - size * 0.5f;
             item.y = pos.y * kWorldToScreenY - size * 0.5f;

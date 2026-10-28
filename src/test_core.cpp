@@ -14,6 +14,7 @@
 #include "scene.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
@@ -89,6 +90,62 @@ static void run_format_tests(const std::string& root, const PathTable& paths) {
               "ball PNG is 32x32");
     }
 
+    // ---- animation timing -------------------------------------------------
+    // AnimDefs.txt states playbackRate is frames per second and isLooping is
+    // 0/1, so the frame an animation shows must follow from the clock alone.
+    {
+        Animation loop;
+        loop.playback_rate = 32.0f;
+        loop.looping = true;
+        loop.frames.assign(30, "frame");
+        CHECK(animation_frame_index(loop, 0.0f) == 0, "looping frame at t=0");
+        CHECK(animation_frame_index(loop, 1.0f / 32.0f) == 1,
+              "one tick advances one frame");
+        CHECK(animation_frame_index(loop, 29.0f / 32.0f) == 29,
+              "reaches last frame before wrapping");
+        CHECK(animation_frame_index(loop, 30.0f / 32.0f) == 0,
+              "looping wraps back to the first frame");
+        CHECK(animation_frame_index(loop, 1.0f) == 2,
+              "one second of 32 fps playback lands on frame 2 of 30");
+        CHECK(animation_frame_index(loop, -1.0f) == 0, "negative time is clamped");
+
+        Animation once = loop;
+        once.looping = false;
+        CHECK(animation_frame_index(once, 30.0f / 32.0f) == 29,
+              "non-looping animation holds its final frame");
+        CHECK(animation_frame_index(once, 100.0f) == 29,
+              "non-looping animation stays on the final frame");
+
+        Animation empty;
+        empty.playback_rate = 32.0f;
+        empty.looping = true;
+        CHECK(animation_frame_index(empty, 1.0f) == 0,
+              "empty animation reports frame 0");
+    }
+
+    // ---- AnimDefs.txt -----------------------------------------------------
+    // Both the fixture and the real tree ship this file; the loader must read
+    // the documented Sequence schema and expand fileName frame prefixes.
+    if (!paths.resolve("data/AnimDefs.txt").empty()) {
+        AnimationRegistry anims;
+        std::string anim_err;
+        CHECK(load_anim_defs(root + "/data/AnimDefs.txt", paths, &anims, &anim_err),
+              "load AnimDefs.txt");
+        CHECK(!anims.sequences.empty(), "AnimDefs registers sequences");
+        CHECK(anims.find("Ball_Red") != nullptr, "Ball_Red sequence found");
+        const Animation* red = anims.find("Ball_Red");
+        if (red) {
+            CHECK(red->frames.size() >= 2, "Ball_Red has 2+ frames");
+            CHECK(red->playback_rate > 0.0f, "Ball_Red has a playback rate");
+        }
+        // Frame paths must resolve to files the PathTable already knows.
+        if (red && !red->frames.empty()) {
+            CHECK(!paths.resolve(red->frames[0]).empty() ||
+                  paths.exists_exact(red->frames[0]),
+                  "first frame path is a known file");
+        }
+    }
+
     // ---- animation frame families ---------------------------------------
     std::vector<std::string> frames;
     CHECK(expand_frames(paths, "data/gfx/balls/red/ball", &frames),
@@ -124,6 +181,38 @@ static void run_real_data_tests(const std::string& root, const PathTable& paths)
           "underscored ball frame family expands");
     CHECK(frames.size() >= 20, "underscored family has >=20 frames");
 
+    // ---- AnimDefs on the real tree ----------------------------------------
+    // Every Ball_* sequence is the 30-frame roll animation at 32 fps listed by
+    // GamePieceFlavors.txt BallRollAnim, and every flavor has one.
+    {
+        AnimationRegistry anims;
+        std::string anim_err;
+        CHECK(load_anim_defs(root + "/data/AnimDefs.txt", paths, &anims, &anim_err),
+              "load real AnimDefs.txt");
+        CHECK(anims.sequences.size() >= 90, "AnimDefs registers 90+ sequences");
+        for (const char* flavor : {"Wild", "Black", "Blue", "Green", "Orange",
+                                   "Pink", "Red", "Teal", "White", "Yellow"}) {
+            const Animation* anim = anims.find(std::string("Ball_") + flavor);
+            char msg[64];
+            snprintf(msg, sizeof(msg), "Ball_%s sequence present", flavor);
+            CHECK(anim != nullptr, msg);
+            if (!anim) continue;
+            // Wild ships 29 frames (ball_0001..ball_0029); every other
+            // flavor ships 30.
+            const size_t expected = std::string(flavor) == "Wild" ? 29 : 30;
+            snprintf(msg, sizeof(msg), "Ball_%s frame count matches data", flavor);
+            CHECK(anim->frames.size() == expected, msg);
+            snprintf(msg, sizeof(msg), "Ball_%s plays at 32 fps", flavor);
+            CHECK(anim->playback_rate == 32.0f, msg);
+            snprintf(msg, sizeof(msg), "Ball_%s loops", flavor);
+            CHECK(anim->looping, msg);
+        }
+        // The shooter's tilt animation is also in the file.
+        const Animation* tilt = anims.find("Shooter_Tilt");
+        CHECK(tilt != nullptr, "Shooter_Tilt sequence present");
+        if (tilt) CHECK(tilt->frames.size() >= 10, "Shooter_Tilt has 10+ frames");
+    }
+
     // ---- track -------------------------------------------------------------
     Track trk;
     std::string err;
@@ -155,6 +244,47 @@ static void run_real_data_tests(const std::string& root, const PathTable& paths)
     if (g2 && g3 && !g2->vertex_indices.empty() && !g3->vertex_indices.empty()) {
         CHECK(g2->vertex_indices.front() == g3->vertex_indices.front(),
               "gate1-2 and gate1-3 share junction vertex");
+    }
+
+    // ---- per-section train speed ------------------------------------------
+    // The map data authors the speed of each section in pathGamePlayData.txt.
+    // The DefaultTrackStartSpeed value of 800 must never become a running
+    // speed: recorded gameplay shows a median of 87 logical px/s on the geb
+    // level (tools/analysis/measure_train_speed.py).
+    if (!paths.resolve("data/maps/geb/pathGamePlayData.txt").empty()) {
+        PathGameplayData gameplay;
+        std::string speed_err;
+        CHECK(load_path_gameplay_data(root + "/data/maps/geb/pathGamePlayData.txt",
+                                      &gameplay, &speed_err),
+              "load geb pathGamePlayData.txt");
+        NameValueConfig variables;
+        load_name_value_config(root + "/data/GameVariables.txt", &variables,
+                               &speed_err);
+        SectionSpeeds speeds;
+        CHECK(build_section_speeds(gameplay, variables, &speeds, &speed_err),
+              "build section speeds");
+        CHECK(speeds.has_configured_speeds(), "geb authors section speeds");
+        CHECK(speeds.start_speed.count("main02") == 1, "main02 has a StartSpeed");
+        CHECK(speeds.end_speed.count("main01") == 1, "main01 has an EndSpeed");
+
+        // A section that names a speed eases between its start and end speed.
+        TrainRoute route;
+        route.sections = {"main02", "main03"};
+        float s0 = route_section_speed(route, 0, speeds, 0.0f);
+        float s1 = route_section_speed(route, 0, speeds, 1.0f);
+        CHECK(std::fabs(s0 - 70.0f) < 0.01f, "main02 starts at its StartSpeed");
+        CHECK(std::fabs(s1 - 60.0f) < 0.01f, "main02 ends at its EndSpeed");
+        CHECK(s1 < s0, "the train eases down across the section");
+
+        // A section that names no speed inherits the pace of the one before
+        // it, and never falls back to the 800 px/s default.
+        TrainRoute inherit;
+        inherit.sections = {"initial", "main01", "main01a"};
+        float carried = route_section_speed(inherit, 2, speeds, 0.0f);
+        CHECK(carried < 200.0f,
+              "a speedless section does not fall back to 800 px/s");
+        CHECK(carried >= 40.0f && carried <= 130.0f,
+              "a speedless section keeps a speed the map authored");
     }
 
     // ---- coordinate transform (real data) --------------------------------
